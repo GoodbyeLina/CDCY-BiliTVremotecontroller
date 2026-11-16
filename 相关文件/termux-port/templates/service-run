@@ -1,0 +1,23 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# runit 服务脚本：install-termux.sh 会把 @HOME@ 替换成实际家目录，
+# 安装到 $PREFIX/var/service/tvstation/run，并 chmod 755。
+#
+# 作用：启动 station.py；stdout/stderr 全部追加到 station.log。
+# runit 会在进程退出后自动重新拉起，相当于树莓派上的 Restart=always。
+
+export PREFIX=/data/data/com.termux/files/usr
+export HOME=@HOME@
+export PATH="$PREFIX/bin:$PATH"
+
+cd "$HOME/tvstation" || exit 1
+
+LOG="$HOME/tvstation/station.log"
+
+# 简单轮转：超过 10MB 就把旧日志挪走，避免长期运行写满手机存储。
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 10485760 ]; then
+  mv -f "$LOG" "$LOG.1"
+fi
+
+exec >> "$LOG" 2>&1
+echo "===== $(date '+%F %T') runit start ====="
+exec python3 -u station.py

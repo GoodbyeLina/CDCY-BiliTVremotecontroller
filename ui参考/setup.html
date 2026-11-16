@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>安卓播控 App · 首次引导 5 步</title>
+<style>
+  :root{
+    --bg:#e9edf4; --card:#fff; --text:#141821; --muted:#6b7280;
+    --line:#e6e9f0; --soft:#f4f6fa;
+    --accent:#2f63ff; --accent-soft:#eaefff;
+    --green:#0f9d58; --green-soft:#e7f6ee;
+    --amber:#c77700; --amber-soft:#fff4e0;
+    --red:#d93a42; --red-soft:#fdecec;
+  }
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  body{margin:0;padding:44px 24px 72px;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}
+  .head{max-width:920px;margin:0 auto 40px}
+  .head h1{margin:0 0 10px;font-size:26px}
+  .head p{margin:0;color:var(--muted);font-size:14px;line-height:1.8}
+
+  .grid{display:flex;flex-wrap:wrap;gap:44px 40px;justify-content:center;align-items:flex-start}
+  .unit{width:390px}
+  .phone{width:390px;height:820px;background:#15171e;border-radius:46px;padding:11px;position:relative;
+    box-shadow:0 24px 60px -18px rgba(20,30,60,.45),0 2px 6px rgba(20,30,60,.12)}
+  .screen{background:#f7f8fb;border-radius:36px;height:100%;overflow:hidden;display:flex;flex-direction:column;position:relative}
+  .notch{position:absolute;top:20px;left:50%;transform:translateX(-50%);width:104px;height:26px;background:#15171e;border-radius:16px;z-index:9}
+  .statusbar{height:46px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:12px;font-weight:600;color:#20242e}
+  .statusbar .right{display:flex;gap:8px;align-items:center;opacity:.85}
+  .batt{width:22px;height:11px;border:1.4px solid #20242e;border-radius:3px;position:relative}
+  .batt::after{content:"";position:absolute;right:-3px;top:3px;width:2px;height:5px;background:#20242e;border-radius:0 1px 1px 0}
+  .batt i{position:absolute;inset:1.4px;width:70%;background:#20242e;border-radius:1px}
+
+  .body{flex:1;overflow:hidden;padding:6px 18px 0;display:flex;flex-direction:column;gap:14px}
+  .kicker{margin:0;font-size:11.5px;letter-spacing:1.2px;color:#8b93a1;font-weight:600}
+  .appbar h2{margin:6px 0 0;font-size:24px;letter-spacing:.4px}
+  .appbar p{margin:6px 0 0;font-size:13px;color:var(--muted);line-height:1.6}
+
+  .steps{display:flex;gap:6px;margin-top:2px}
+  .steps i{flex:1;height:6px;border-radius:99px;background:#e6e9f0}
+  .steps i.done{background:#9db4ff}
+  .steps i.on{background:var(--accent)}
+
+  .card{background:var(--card);border-radius:18px;border:1px solid var(--line);padding:16px}
+  .card.tight{padding:14px 16px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .h3{margin:0;font-size:15px;font-weight:600}
+  .sub{font-size:12.5px;color:var(--muted);line-height:1.7}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:999px}
+  .pill.g{color:var(--green);background:var(--green-soft)}
+  .pill.a{color:var(--amber);background:var(--amber-soft)}
+  .pill.b{color:var(--accent);background:var(--accent-soft)}
+
+  .field{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .field .lbl{font-size:11.5px;color:var(--muted);margin-bottom:4px}
+  .field .val{font-size:14px}
+  .ph{color:#9aa3b2}
+
+  .alert{border-radius:14px;padding:12px 14px;font-size:12.5px;line-height:1.7;border:1px solid transparent}
+  .alert.g{background:#f4fbf7;border-color:#bfe6d0;color:#126e45}
+  .alert.r{background:#fdf3f3;border-color:#f2c9cb;color:#a9262d}
+  .alert.a{background:#fffaf0;border-color:#f3e2bd;color:#7a5200}
+  .alert .t{font-weight:700;display:block;margin-bottom:4px}
+
+  .btn{display:flex;align-items:center;justify-content:center;height:52px;border-radius:15px;font-size:16px;font-weight:600;border:0}
+  .btn.primary{background:var(--accent);color:#fff;box-shadow:0 10px 22px -10px rgba(47,99,255,.8)}
+  .btn.ghost{background:#fff;color:var(--text);border:1px solid var(--line)}
+  .btn.sm{height:40px;font-size:13.5px;border-radius:11px;font-weight:600}
+  .bottom{flex:none;padding:0 0 18px;display:flex;gap:10px;margin-top:auto}
+
+  .seg{display:flex;background:#eef1f7;border-radius:12px;padding:3px;gap:3px}
+  .seg span{flex:1;text-align:center;padding:8px 0;font-size:13px;font-weight:600;color:#66707f;border-radius:9px}
+  .seg span.on{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(20,30,60,.12)}
+
+  .item{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+  .item:last-child{border-bottom:0}
+  .avatar{width:36px;height:36px;border-radius:10px;background:var(--soft);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#5b6472;flex:none}
+  .avatar.ok{background:var(--green-soft);color:var(--green)}
+  .avatar.warn{background:var(--amber-soft);color:var(--amber)}
+  .grow{flex:1;min-width:0}
+  .name{font-size:14px;font-weight:600}
+  .meta{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}
+
+  .kv{display:flex;justify-content:space-between;font-size:13px;padding:9px 0;border-bottom:1px solid var(--line)}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--muted)}
+
+  .caption{text-align:center;margin-top:14px;font-size:13px;color:#4b5563}
+  .caption b{color:var(--text)}
+  .caption span{color:#8b93a1;font-size:12.5px}
+
+  .section-title{max-width:920px;margin:56px auto 18px;font-size:16px;font-weight:700}
+  .section-title small{font-weight:400;font-size:12.5px;color:var(--muted);margin-left:8px}
+  .notes{max-width:920px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+  .notes .card{background:#fff}
+  .notes h4{margin:0 0 6px;font-size:14px}
+  .notes p{margin:0;font-size:12.5px;color:var(--muted);line-height:1.75}
+</style>
+</head>
+<body>
+
+<div class="head">
+  <h1>安卓播控 App · 首次引导（5 步）</h1>
+  <p>对应方案 FR-13 与 5.7 节。设计前提：<b>用户不该为了看个电视去理解什么是 IP、端口、adb</b>——所以每步只问一件事，能自动的自动，必须手动填的给出「从哪里抄」。</p>
+</div>
+
+<div class="grid">
+
+  <!-- 1 手机网络 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:00</span><span class="right"><span>5G</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 1 步 / 共 5 步</p>
+            <h2>手机网络</h2>
+            <p>先确认手机和电视在同一张 WiFi 里</p>
+          </div>
+          <div class="steps"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+
+          <div class="card">
+            <div class="row">
+              <div>
+                <p class="h3">当前 WiFi</p>
+                <p class="sub" style="margin-top:4px">CMCC-5G · 已连接</p>
+              </div>
+              <span class="pill g">✓ 已连接</span>
+            </div>
+            <div class="field" style="margin-top:12px">
+              <div class="lbl">手机局域网地址</div>
+              <div class="val mono">192.168.1.23</div>
+            </div>
+            <p class="sub" style="margin:8px 0 0">自动获取，也可以直接点进去手改</p>
+            <button class="btn ghost sm" style="width:100%;margin-top:12px">重新自动获取</button>
+          </div>
+
+          <div class="alert a">
+            <span class="t">这一步为什么重要</span>
+            电视需要到「这个地址」来拿视频。如果手机走的是移动数据、或者连的是访客网络，电视就找不到它。
+          </div>
+
+          <div class="bottom"><button class="btn primary" style="flex:1">下一步</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>① 手机网络</b><br><span>自动获取为主，取不到时可手填；检测到蜂窝网络会直接拦住</span></div>
+  </div>
+
+  <!-- 1b 手机网络 · 自动失败 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:01</span><span class="right"><span>WiFi</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 1 步 · 另一种情况</p>
+            <h2>没取到地址</h2>
+            <p>自动获取失败，手动填一下就行</p>
+          </div>
+
+          <div class="alert r"><span class="t">自动获取失败</span>当前网络不允许读取地址，可能是访客网络或系统限制。</div>
+
+          <div class="card">
+            <p class="h3" style="margin-bottom:8px">怎么查手机 IP</p>
+            <div class="item"><div class="avatar">1</div><div class="grow"><div class="name">打开手机设置 → WLAN</div><div class="meta">点开当前连接的网络</div></div></div>
+            <div class="item"><div class="avatar">2</div><div class="grow"><div class="name">找「IP 地址」</div><div class="meta">形如 192.168.1.23 的四段数字</div></div></div>
+            <div class="item"><div class="avatar">3</div><div class="grow"><div class="name">填进来</div><div class="meta">前三段要和电视一致（如 192.168.1.x）</div></div></div>
+          </div>
+
+          <div class="field"><div class="lbl">手机局域网地址（手动填写）</div><div class="val mono ph">例如 192.168.1.23</div></div>
+
+          <div class="bottom">
+            <button class="btn ghost" style="flex:1">再自动试一次</button>
+            <button class="btn primary" style="flex:2">保存并继续</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>① 手机网络 · 自动失败</b><br><span>有自动、也有退路：手填地址、字段校验、失败时给「去哪抄」的路径</span></div>
+  </div>
+
+  <!-- 2 连接电视 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:02</span><span class="right"><span>5G</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 2 步 / 共 5 步</p>
+            <h2>连接电视</h2>
+            <p>电视开「网络调试」，App 连上去</p>
+          </div>
+          <div class="steps"><i class="done"></i><i class="on"></i><i></i><i></i><i></i></div>
+
+          <div class="card tight">
+            <p class="sub" style="line-height:1.8">电视上：<b>设置 → 关于 → 版本号连点 7 次</b> 打开开发者选项，再进「开发者选项 → 网络调试」。</p>
+          </div>
+
+          <div class="field"><div class="lbl">电视 IP 地址</div><div class="val mono">192.168.1.50</div></div>
+          <div class="field"><div class="lbl">端口</div><div class="val mono">5555</div></div>
+
+          <button class="btn ghost sm">测试连接</button>
+
+          <div class="alert g"><span class="t">连接成功</span>192.168.1.50 · 12 ms</div>
+
+          <div class="alert a"><span class="t">第一次连接会弹窗</span>电视上会出现「是否允许 USB 调试」，用遥控器选「允许」。只需一次，以后不再问。</div>
+
+          <div class="bottom">
+            <button class="btn ghost" style="flex:1">上一步</button>
+            <button class="btn primary" style="flex:2">下一步</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>② 连接电视</b><br><span>填完必须点「测试连接」才放行——避免带着错地址走到最后</span></div>
+  </div>
+
+  <!-- 3 播放器 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:04</span><span class="right"><span>5G</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 3 步 / 共 5 步</p>
+            <h2>电视播放器</h2>
+            <p>电视上要有一个能播网络流的播放器</p>
+          </div>
+          <div class="steps"><i class="done"></i><i class="done"></i><i class="on"></i><i></i><i></i></div>
+
+          <div class="card">
+            <div class="row">
+              <div>
+                <p class="h3">mpv-android</p>
+                <p class="sub mono" style="margin-top:4px">is.xyz.mpv</p>
+              </div>
+              <span class="pill g">✓ 已安装</span>
+            </div>
+            <div class="kv" style="margin-top:8px"><span class="k">版本</span><span class="sub">已装，可正常调用</span></div>
+          </div>
+
+          <div class="alert a">
+            <span class="t">电视上没装？</span>
+            在电视应用市场搜「mpv-android」安装；或用 U 盘拷 APK 装。装完在电视上打开一次，再回来点「重新检测」。
+          </div>
+
+          <button class="btn ghost sm">重新检测</button>
+
+          <div class="bottom">
+            <button class="btn ghost" style="flex:1">上一步</button>
+            <button class="btn primary" style="flex:2">下一步</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>③ 电视播放器</b><br><span>App 只负责递地址，播放交给 mpv；装没装由 adb 检测，不靠用户自报</span></div>
+  </div>
+
+  <!-- 4 内容 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:06</span><span class="right"><span>5G</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 4 步 / 共 5 步</p>
+            <h2>播什么</h2>
+            <p>选模式，粘一个链接就行</p>
+          </div>
+          <div class="steps"><i class="done"></i><i class="done"></i><i class="done"></i><i class="on"></i><i></i></div>
+
+          <div class="seg"><span class="on">直播</span><span>视频列表</span></div>
+
+          <div class="field ph">粘贴直播间链接或房间号，例如 live.bilibili.com/7745123</div>
+
+          <div class="card tight">
+            <p class="h3" style="margin-bottom:8px">已添加 3 个直播间</p>
+            <div class="item"><div class="avatar">1</div><div class="grow"><div class="name">鸟取县 山阴海岸</div><div class="meta">正在直播</div></div></div>
+            <div class="item"><div class="avatar">2</div><div class="grow"><div class="name">京都 鸭川散步</div><div class="meta">正在直播</div></div></div>
+            <div class="item"><div class="avatar warn">3</div><div class="grow"><div class="name">富士山 河口湖</div><div class="meta">未开播 · 播放时自动跳过</div></div></div>
+          </div>
+
+          <div class="alert g"><span class="t">已识别</span>3 个直播间，按顺序轮播，每个播 30 分钟。</div>
+
+          <div class="bottom">
+            <button class="btn ghost" style="flex:1">上一步</button>
+            <button class="btn primary" style="flex:2">下一步</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>④ 播什么</b><br><span>粘贴即识别；粘贴合集链接会提示「这是合集，请换列表」而不是默默失败</span></div>
+  </div>
+
+  <!-- 5 自检 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:08</span><span class="right"><span>5G</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 5 步 / 共 5 步</p>
+            <h2>最后检查一遍</h2>
+            <p>全绿就可以开始看了</p>
+          </div>
+          <div class="steps"><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="on"></i></div>
+
+          <div class="card">
+            <div class="item"><div class="avatar ok">✓</div><div class="grow"><div class="name">电视可达</div><div class="meta mono">192.168.1.50:5555 · 12 ms</div></div></div>
+            <div class="item"><div class="avatar ok">✓</div><div class="grow"><div class="name">播放器已安装</div><div class="meta mono">is.xyz.mpv</div></div></div>
+            <div class="item"><div class="avatar ok">✓</div><div class="grow"><div class="name">B站可达</div><div class="meta">86 ms</div></div></div>
+            <div class="item"><div class="avatar ok">✓</div><div class="grow"><div class="name">代理端口</div><div class="meta mono">8099 可用</div></div></div>
+          </div>
+
+          <div class="alert g"><span class="t">全部通过</span>以后再打开 App，直接点「开始播放」就行。</div>
+
+          <div class="bottom">
+            <button class="btn primary" style="flex:2">开始第一次播放</button>
+          </div>
+          <div style="text-align:center;font-size:11.5px;color:#98a0ae;padding-bottom:2px">配置已保存 · 可随时在「设置」里修改</div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>⑤ 自检并完成</b><br><span>把「能不能播」在该播之前就验掉；完成即开始第一次播放</span></div>
+  </div>
+
+  <!-- 失败态 -->
+  <div class="unit">
+    <div class="phone"><div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>10:03</span><span class="right"><span>5G</span><span class="batt"><i></i></span></span></div>
+        <div class="body">
+          <div class="appbar">
+            <p class="kicker">第 2 步 · 另一种情况</p>
+            <h2>连不上电视</h2>
+            <p>先别急，按顺序排一下</p>
+          </div>
+
+          <div class="alert r"><span class="t">连接失败</span>192.168.1.50:5555 无响应（超时 8 秒）</div>
+
+          <div class="card">
+            <p class="h3" style="margin-bottom:10px">按这个顺序查</p>
+            <div class="item"><div class="avatar">1</div><div class="grow"><div class="name">电视和手机是同一张 WiFi 吗</div><div class="meta">访客网络、双频合一有时会分到不同网段</div></div></div>
+            <div class="item"><div class="avatar">2</div><div class="grow"><div class="name">电视上的「网络调试」还开着吗</div><div class="meta">部分电视重启后会自己关掉</div></div></div>
+            <div class="item"><div class="avatar">3</div><div class="grow"><div class="name">IP 变了吗</div><div class="meta">路由器重启后电视可能换了地址</div></div></div>
+          </div>
+
+          <div class="alert a"><span class="t">建议</span>在路由器里给电视绑定一个固定 IP，以后就不会再遇到这个问题。</div>
+
+          <div class="bottom">
+            <button class="btn ghost" style="flex:1">返回修改</button>
+            <button class="btn primary" style="flex:2">再试一次</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><b>② 失败态</b><br><span>同一屏的异常分支：给原因 + 排查顺序，不给一串英文错误码</span></div>
+  </div>
+
+</div>
+
+<div class="section-title">引导设计约定 <small>后面写代码按这几条来，不临时发挥</small></div>
+<div class="notes">
+  <div class="card">
+    <h4>每步只问一件事</h4>
+    <p>网络、电视、播放器、内容、自检，五个独立问题。前一步没通过，后一步不展开——避免用户在前面填错、后面一路懵。</p>
+  </div>
+  <div class="card">
+    <h4>能测的必须能测</h4>
+    <p>电视连接、播放器、B站、端口，每一步都给「测试 / 检测」按钮，结果当场显示，不靠用户自己判断。</p>
+  </div>
+  <div class="card">
+    <h4>中断可续</h4>
+    <p>进度写进配置，退出 App 再进来从断点继续；已填过的字段带默认值，不要求重填。</p>
+  </div>
+  <div class="card">
+    <h4>失败给「怎么办」</h4>
+    <p>错误信息必须是「原因 + 下一步动作」两段式；技术细节（超时秒数、异常类名）只进日志，不上屏。</p>
+  </div>
+  <div class="card">
+    <h4>不假装能自动</h4>
+    <p>电视开调试、装播放器、点「允许调试」这些只能人做，就给清楚的图文指引，不做一个假装自动的等待动画。</p>
+  </div>
+  <div class="card">
+    <h4>只出现一次</h4>
+    <p>向导只在新安装或用户主动「重新初始化」时出现；日常打开直接进首页，不重复打扰。</p>
+  </div>
+  <div class="card">
+    <h4>自动失败必须有退路</h4>
+    <p>手机 IP 这类能自动探测的字段，一律同时允许手动填写；探测失败给出「去哪抄」的路径，而不是卡死在这一步。</p>
+  </div>
+</div>
+
+<p style="max-width:920px;margin:36px auto 0;font-size:12px;color:#8b93a1;line-height:1.8">
+  说明：静态示意图，配色/间距落地时按 Material 3 主题微调。步骤顺序与字段以 <b>docs/H-技术方案-安卓播控App.md</b> 5.7 节为准。
+</p>
+
+</body>
+</html>

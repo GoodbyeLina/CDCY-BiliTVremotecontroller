@@ -1,0 +1,22 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# tvcontrol 服务脚本：install-termux.sh 会把 @HOME@ 替换成实际家目录，
+# 安装到 $PREFIX/var/service/tvcontrol/run，并 chmod 755。
+#
+# 它只监听 127.0.0.1:8098，给手机 App / 浏览器控制台用。
+
+export PREFIX=/data/data/com.termux/files/usr
+export HOME=@HOME@
+export PATH="$PREFIX/bin:$PATH"
+export SVDIR="$PREFIX/var/service"
+
+cd "$HOME/tvstation" || exit 1
+
+LOG="$HOME/tvstation/control.log"
+
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 5242880 ]; then
+  mv -f "$LOG" "$LOG.1"
+fi
+
+exec >> "$LOG" 2>&1
+echo "===== $(date '+%F %T') tvcontrol start ====="
+exec python3 -u control.py

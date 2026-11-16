@@ -1,0 +1,16 @@
+{
+  "source": "live",
+  "rooms": [5017134, 5064126, 4374913],
+  "list_mid": 23191782,
+  "list_id": 1424266,
+  "pick_count": 5,
+  "switch_seconds": 30,
+  "status_seconds": 10,
+  "port": 8099,
+  "control_port": 8098,
+  "setup_seen": false,
+  "tv": "192.168.10.139:5555",
+  "public_host": "192.168.10.241",
+  "mpv_pkg": "is.xyz.mpv",
+  "mpv_activity": "is.xyz.mpv/.MPVActivity"
+}

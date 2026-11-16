@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fb7299">
+<title>B站轮播台</title>
+<link rel="stylesheet" href="setup.css">
+<style>
+  :root {
+    --pink: #fb7299;
+    --pink-dark: #e45c83;
+    --blue: #00aeec;
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --text: #1f2430;
+    --muted: #7a8291;
+    --line: #e8ebf0;
+    --red: #d93838;
+    --green: #1f9d55;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    padding: 12px 12px 28px;
+    padding: calc(12px + env(safe-area-inset-top)) 12px
+             calc(28px + env(safe-area-inset-bottom));
+  }
+  #app { max-width: 680px; margin: 0 auto; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 4px 14px;
+  }
+  .brand { font-size: 21px; font-weight: 800; letter-spacing: .5px; }
+  .brand span { color: var(--pink); }
+  .pill {
+    font-size: 12px; padding: 5px 10px; border-radius: 999px;
+    background: #e9edf3; color: var(--muted); white-space: nowrap;
+  }
+  .pill.ok { background: #e5f7ee; color: var(--green); }
+  .pill.bad { background: #fdecec; color: var(--red); }
+  .card {
+    background: var(--card); border-radius: var(--radius); padding: 16px;
+    margin-bottom: 12px; box-shadow: 0 2px 12px rgba(31, 36, 48, .05);
+  }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 700; }
+  .row { display: flex; align-items: flex-start; justify-content: space-between; }
+  .row > * + * { margin-left: 12px; }
+  .label { font-size: 12px; color: var(--muted); }
+  .current { font-size: 20px; font-weight: 800; margin-top: 2px; word-break: break-all; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .tag {
+    display: inline-block; font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    background: #fff0f5; color: var(--pink-dark); white-space: nowrap;
+  }
+  .tag.live { background: #e5f7ee; color: var(--green); }
+  .tag.off { background: #eef1f5; color: var(--muted); }
+  .actions { display: flex; margin-top: 14px; flex-wrap: wrap; }
+  .actions button { margin: 0 8px 8px 0; }
+  button {
+    font: inherit; border: 0; border-radius: 12px; min-height: 44px;
+    padding: 0 16px; background: var(--pink); color: #fff; font-weight: 700;
+  }
+  button:active { opacity: .78; }
+  button:disabled { opacity: .45; }
+  button.ghost {
+    background: #f1f3f7; color: var(--text); font-weight: 600;
+  }
+  button.small { min-height: 34px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
+  .inputwrap { display: flex; }
+  input {
+    font: inherit; width: 100%; min-width: 0; min-height: 46px;
+    border: 1px solid var(--line); border-radius: 12px; padding: 0 12px;
+    background: #fbfcfd; color: var(--text); outline: none;
+  }
+  input:focus { border-color: var(--pink); background: #fff; }
+  .inputwrap button { flex: 0 0 auto; min-width: 96px; margin-left: 8px; }
+  .hint {
+    margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.65;
+    white-space: pre-line;
+  }
+  .error {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+    background: #fdecec; color: var(--red); font-size: 13px;
+    white-space: pre-line; word-break: break-word;
+  }
+  .hidden { display: none !important; }
+  .result {
+    display: flex; align-items: center;
+    padding: 12px 0; border-top: 1px solid var(--line);
+  }
+  .result .avatar { margin-right: 12px; }
+  .result button { margin-left: 8px; }
+  .result:first-child { border-top: 0; }
+  .avatar {
+    width: 44px; height: 44px; border-radius: 50%; flex: 0 0 44px;
+    background: linear-gradient(135deg, #ffd3e2, #c9effb);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; color: #8a4a63; overflow: hidden;
+  }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .name { font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result button { min-height: 38px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
+  .result .no { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .livecard { padding: 12px; border-radius: 12px; background: #fff6f9; margin-top: 10px; }
+  .livecard .title { font-weight: 800; font-size: 16px; margin: 4px 0; word-break: break-all; }
+  .settings label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 6px; }
+  .settings input { min-height: 44px; }
+  .settings button { width: 100%; margin-top: 12px; }
+  pre#log {
+    margin: 0; max-height: 260px; overflow: auto; background: #11151c; color: #d7e0ea;
+    border-radius: 10px; padding: 12px; font-size: 11.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .foot { text-align: center; color: var(--muted); font-size: 11px; margin: 6px 0 0; }
+  @media (max-width: 380px) {
+    .inputwrap { flex-direction: column; }
+    .inputwrap button { width: 100%; margin-left: 0; margin-top: 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">B站<span>轮播台</span></div>
+    <div id="conn" class="pill">连接中…</div>
+  </header>
+
+  <div id="healthBanner" class="health-banner hidden">
+    <div id="healthBannerText" class="grow">配置有问题</div>
+    <button id="healthBannerBtn" class="small">修复</button>
+  </div>
+
+  <section class="card">
+    <div class="row">
+      <div class="grow">
+        <div class="label">当前播放</div>
+        <div id="current" class="current">—</div>
+      </div>
+      <div><span id="mode" class="tag">—</span></div>
+    </div>
+    <div id="sub" class="muted" style="margin-top:6px">读取状态中…</div>
+    <div class="actions">
+      <button id="btnStart" class="ghost">启动</button>
+      <button id="btnStop" class="ghost">停止</button>
+      <button id="btnWake" class="ghost">唤醒电视</button>
+      <button id="btnRestart" class="ghost">重启服务</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>换一个直播间</h2>
+    <div class="inputwrap">
+      <input id="q" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="输入 UP 名字，或粘贴直播间链接">
+      <button id="btnSearch">搜索 / 播放</button>
+    </div>
+    <div class="hint">支持：
+· UP 名字，例如：老番茄
+· 直播间链接，例如：https://live.bilibili.com/5017134
+· 纯数字直播间号，例如：5017134
+合集/视频链接是第二版功能。</div>
+    <div id="error" class="error hidden"></div>
+    <div id="results"></div>
+  </section>
+
+  <section class="card settings">
+    <h2>设置</h2>
+    <label>电视 ADB 地址</label>
+    <input id="tv" placeholder="192.168.1.23:5555" autocomplete="off">
+    <label>手机 WiFi IP（电视要能访问它）</label>
+    <input id="host" placeholder="192.168.1.50" autocomplete="off">
+    <button id="btnSave">保存并重启</button>
+    <div id="settingsMsg" class="muted" style="margin-top:8px"></div>
+
+    <div class="modify-list">
+      <button class="modify-row" id="editPhone" type="button">
+        <span>手机网络</span><span class="modify-val" id="editPhoneVal">—</span><b>修改</b>
+      </button>
+      <button class="modify-row" id="editTv" type="button">
+        <span>电视连接</span><span class="modify-val" id="editTvVal">—</span><b>修改</b>
+      </button>
+      <button class="modify-row" id="editMpv" type="button">
+        <span>电视播放器</span><span class="modify-val" id="editMpvVal">—</span><b>检查</b>
+      </button>
+      <button class="modify-row" id="editContent" type="button">
+        <span>当前直播间</span><span class="modify-val" id="editContentVal">—</span><b>修改</b>
+      </button>
+      <button class="modify-row danger" id="btnReinit" type="button">
+        <span>重新初始化</span><span class="modify-val">换 WiFi / 换电视后使用</span><b>开始</b>
+      </button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="align-items:center">
+      <h2 style="margin:0">最近日志</h2>
+      <button id="btnLog" class="ghost small">刷新</button>
+    </div>
+    <pre id="log" style="margin-top:12px">点“刷新”查看…</pre>
+  </section>
+
+  <div class="foot">只监听 127.0.0.1，仅供本机控制</div>
+</div>
+
+<!-- 首次配置 / 修复向导 -->
+<div id="setupOverlay" class="setup-overlay hidden">
+  <div class="setup-card">
+    <div class="setup-head">
+      <div class="grow">
+        <div class="setup-kicker">B站轮播台</div>
+        <div class="setup-title" id="setupTitle">首次配置</div>
+      </div>
+      <div class="setup-progress" id="setupProgress">1/5</div>
+      <button class="setup-close hidden" id="setupClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="setup-dots" id="setupDots"></div>
+    <div class="setup-body" id="setupBody">
+      <div class="setup-loading">正在检查…</div>
+    </div>
+    <div class="setup-foot">
+      <button class="ghost" id="setupBack" type="button" disabled>上一步</button>
+      <button class="ghost" id="setupRetry" type="button">重试</button>
+      <button id="setupNext" type="button" disabled>下一步</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { data: null, busy: false };
+
+  function setConn(text, cls) {
+    var el = $("conn");
+    el.textContent = text;
+    el.className = "pill" + (cls ? " " + cls : "");
+  }
+
+  function showError(msg) {
+    var el = $("error");
+    if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
+    el.textContent = msg;
+    el.classList.remove("hidden");
+  }
+
+  function api(path, opts) {
+    var options = { cache: "no-store" };
+    if (opts) {
+      for (var k in opts) {
+        if (Object.prototype.hasOwnProperty.call(opts, k)) options[k] = opts[k];
+      }
+    }
+    return fetch(path, options).then(function (res) {
+      return res.json().catch(function () {
+        return { ok: false, error: "服务返回了非 JSON" };
+      }).then(function (data) {
+        if (!res.ok && !data.error) data.error = "HTTP " + res.status;
+        return data;
+      });
+    });
+  }
+
+  function modeText(source) {
+    if (source === "single") return "单直播间";
+    if (source === "live") return "多直播间轮播";
+    if (source === "video") return "合集视频";
+    return source || "—";
+  }
+
+  function renderState(d) {
+    if (!d || !d.ok) {
+      setConn("控制服务异常", "bad");
+      $("current").textContent = "—";
+      $("sub").textContent = (d && d.error) || "控制服务没有响应";
+      return;
+    }
+    state.data = d;
+    setConn(d.control === "run" ? "已连接" : "控制服务未运行",
+           d.control === "run" ? "ok" : "bad");
+
+    var cfg = d.config || {};
+    $("mode").textContent = modeText(cfg.source);
+    $("mode").className = "tag";
+
+    if (!$("tv").matches(":focus")) $("tv").value = cfg.tv || "";
+    if (!$("host").matches(":focus")) $("host").value = cfg.public_host || "";
+
+    var current = "—";
+    var sub = "";
+    var proxy = d.proxy;
+    if (cfg.source === "single") {
+      if (Array.isArray(proxy) && proxy.length) {
+        var r = proxy[0];
+        current = "直播间 " + r.room;
+        sub = (r.live ? "直播中" : "未开播") + (r.title ? " · " + r.title : "");
+        $("mode").className = "tag " + (r.live ? "live" : "off");
+        $("mode").textContent = r.live ? "直播中" : "未开播";
+      } else {
+        sub = d.proxy_error ? ("代理还没响应：" + d.proxy_error) : "等待代理状态…";
+      }
+    } else if (cfg.source === "live") {
+      var lives = Array.isArray(proxy) ? proxy.filter(function (x) { return x.live; }) : [];
+      current = lives.length ? "轮播中（" + lives.length + " 个在播）" : "没有在播的直播间";
+      sub = lives.map(function (x) { return x.room + " " + (x.title || ""); }).join(" / ");
+    } else if (cfg.source === "video") {
+      current = "合集视频轮播";
+      sub = "mid=" + cfg.list_mid + " list_id=" + cfg.list_id;
+    }
+
+    if (d.service !== "run") {
+      current = "服务未运行";
+      sub = d.service_raw || "tvstation 没有启动";
+      $("mode").className = "tag off";
+      $("mode").textContent = "已停止";
+    }
+
+    $("current").textContent = current;
+    $("sub").textContent = sub || "";
+  }
+
+  function refresh() {
+    api("/api/state").then(renderState).catch(function (e) {
+      setConn("控制服务未连接", "bad");
+      $("sub").textContent = "请确认 Termux 里的 tvcontrol 正在运行。" +
+        (e && e.message ? " " + e.message : "");
+    });
+  }
+
+  function avatar(name) {
+    var d = document.createElement("div");
+    d.className = "avatar";
+    d.textContent = (name || "?").slice(0, 1);
+    return d;
+  }
+
+  function resultRow(item, onPlay) {
+    var row = document.createElement("div");
+    row.className = "result";
+    row.appendChild(avatar(item.uname));
+    var grow = document.createElement("div");
+    grow.className = "grow";
+    var name = document.createElement("div");
+    name.className = "name";
+    name.textContent = item.uname || ("mid " + item.mid);
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = "mid " + item.mid + " · " + (item.fans || 0).toLocaleString() +
+      " 粉丝" + (item.room_id ? " · 房间 " + item.room_id : " · 无直播间");
+    grow.appendChild(name);
+    grow.appendChild(meta);
+    row.appendChild(grow);
+    if (item.room_id) {
+      var b = document.createElement("button");
+      b.textContent = "播放";
+      b.onclick = function () { onPlay(item.room_id); };
+      row.appendChild(b);
+    } else {
+      var no = document.createElement("div");
+      no.className = "no";
+      no.textContent = "无直播间";
+      row.appendChild(no);
+    }
+    return row;
+  }
+
+  function renderSearch(d) {
+    var box = $("results");
+    box.innerHTML = "";
+    showError(d.ok ? "" : d.error);
+
+    if (!d.ok) return;
+
+    if (d.kind === "live" && d.room) {
+      var card = document.createElement("div");
+      card.className = "livecard";
+      var t = document.createElement("div");
+      t.className = "label";
+      t.textContent = "找到直播间 " + d.room.room_id;
+      var title = document.createElement("div");
+      title.className = "title";
+      title.textContent = d.room.title || "(无标题)";
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = (d.room.live ? "直播中" : "当前未开播") +
+        (d.room.online ? " · 人气 " + d.room.online : "");
+      var b = document.createElement("button");
+      b.textContent = "播放这个直播间";
+      b.style.marginTop = "10px";
+      b.onclick = function () { playLive(d.room.room_id); };
+      card.appendChild(t);
+      card.appendChild(title);
+      card.appendChild(meta);
+      card.appendChild(b);
+      box.appendChild(card);
+      return;
+    }
+
+    if (d.kind === "candidates" && Array.isArray(d.candidates)) {
+      if (d.message) {
+        var m = document.createElement("div");
+        m.className = "muted";
+        m.style.margin = "6px 0";
+        m.textContent = d.message;
+        box.appendChild(m);
+      }
+      d.candidates.forEach(function (item) {
+        box.appendChild(resultRow(item, playLive));
+      });
+    }
+  }
+
+  function busyDone() {
+    state.busy = false;
+    $("btnSearch").disabled = false;
+  }
+
+  function playLive(roomId) {
+    if (state.busy) return;
+    state.busy = true;
+    $("btnSearch").disabled = true;
+    showError("");
+    api("/api/play_live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room_id: roomId })
+    }).then(function (d) {
+      if (!d.ok) {
+        showError(d.error || "切换失败");
+      } else {
+        showError("");
+        var ok = document.createElement("div");
+        ok.className = "muted";
+        ok.style.marginTop = "10px";
+        ok.textContent = d.message || "已切换";
+        $("results").appendChild(ok);
+        setTimeout(refresh, 1500);
+      }
+    }).catch(function (e) {
+      showError("请求失败：" + e.message);
+    }).then(busyDone, busyDone);
+  }
+
+  function search() {
+    var q = $("q").value.trim();
+    if (!q) {
+      showError("先输入 UP 名字，或粘贴直播间链接，例如 https://live.bilibili.com/5017134。");
+      return;
+    }
+    $("btnSearch").disabled = true;
+    showError("");
+    $("results").innerHTML = "";
+    api("/api/search?q=" + encodeURIComponent(q)).then(function (d) {
+      renderSearch(d);
+    }).catch(function (e) {
+      showError("请求失败：" + e.message + "。请确认 Termux 里的 tvcontrol 正在运行。");
+    }).then(function () {
+      $("btnSearch").disabled = false;
+    }, function () {
+      $("btnSearch").disabled = false;
+    });
+  }
+
+  function control(action) {
+    if (state.busy) return;
+    state.busy = true;
+    api("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: action })
+    }).then(function (d) {
+      if (!d.ok) showError(d.error || "操作失败");
+      else { showError(""); $("sub").textContent = d.message || "已执行"; }
+      setTimeout(refresh, 1200);
+    }).catch(function (e) {
+      showError("请求失败：" + e.message);
+    }).then(function () {
+      state.busy = false;
+    }, function () {
+      state.busy = false;
+    });
+  }
+
+  function saveSettings() {
+    $("btnSave").disabled = true;
+    $("settingsMsg").textContent = "保存中…";
+    api("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tv: $("tv").value.trim(), public_host: $("host").value.trim() })
+    }).then(function (d) {
+      $("settingsMsg").textContent = d.ok ? "已保存" : (d.error || "保存失败");
+      setTimeout(refresh, 1200);
+    }).catch(function (e) {
+      $("settingsMsg").textContent = "请求失败：" + e.message;
+    }).then(function () {
+      $("btnSave").disabled = false;
+    }, function () {
+      $("btnSave").disabled = false;
+    });
+  }
+
+  function loadLogs() {
+    $("btnLog").disabled = true;
+    api("/api/log?n=80").then(function (d) {
+      $("log").textContent = d.ok ? (d.log || "(空)") : ("读取失败：" + (d.error || ""));
+    }).catch(function (e) {
+      $("log").textContent = "读取失败：" + e.message;
+    }).then(function () {
+      $("btnLog").disabled = false;
+    }, function () {
+      $("btnLog").disabled = false;
+    });
+  }
+
+  $("btnSearch").onclick = search;
+  $("q").addEventListener("keydown", function (e) { if (e.key === "Enter") search(); });
+  $("btnStart").onclick = function () { control("start"); };
+  $("btnStop").onclick = function () { control("stop"); };
+  $("btnWake").onclick = function () { control("wake"); };
+  $("btnRestart").onclick = function () { control("restart"); };
+  $("btnSave").onclick = saveSettings;
+  $("btnLog").onclick = loadLogs;
+
+  if (!window.fetch) {
+    setConn("WebView 太旧", "bad");
+    $("current").textContent = "无法加载";
+    $("sub").textContent = "请更新 Android System WebView 后再打开。";
+    return;
+  }
+
+  refresh();
+  setInterval(refresh, 5000);
+})();
+
+</script>
+<script src="setup.js"></script>
+</body>
+</html>

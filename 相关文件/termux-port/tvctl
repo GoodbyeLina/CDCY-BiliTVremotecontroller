@@ -1,0 +1,79 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# tvctl —— Termux 上的服务控制（替代树莓派上的 systemctl）
+#
+#   ./tvctl start      启动（并取消“禁用”状态）
+#   ./tvctl stop       临时停止（重启手机后仍会按开机自启运行）
+#   ./tvctl restart    改了 config.json 后用这个
+#   ./tvctl status     服务 + 8099 状态接口 + 最近日志
+#   ./tvctl log [N]    看最近 N 行日志（默认 40）
+#   ./tvctl wake       只给电视发唤醒键，不派台
+#   ./tvctl control    重启控制服务 tvcontrol（改 control.py 后用）
+set -u
+
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PATH="$PREFIX/bin:$PATH"
+export SVDIR="$PREFIX/var/service"
+
+SVC=tvstation
+LOG="$HOME/tvstation/station.log"
+CFG="$HOME/tvstation/config.json"
+
+read_cfg() {
+  # $1 = 字段名，$2 = 默认值
+  python3 - "$CFG" "$1" "$2" <<'PY' 2>/dev/null || printf '%s' "$2"
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8-sig") as fh:
+        cfg = json.load(fh)
+    print(cfg.get(sys.argv[2], sys.argv[3]))
+except Exception:
+    print(sys.argv[3])
+PY
+}
+
+usage() {
+  echo "用法: tvctl start|stop|restart|status|log [行数]|wake|control"
+}
+
+case "${1:-}" in
+  start)
+    rm -f "$SVDIR/$SVC/down"
+    sv up "$SVC" || { echo "启动失败，看 $LOG"; exit 1; }
+    ;;
+  stop)
+    sv down "$SVC" || true
+    ;;
+  restart)
+    sv restart "$SVC" || { echo "重启失败；服务没装就用 ./run.sh"; exit 1; }
+    ;;
+  status)
+    echo "== 服务 =="
+    sv status "$SVC" 2>/dev/null || echo "(tvstation 未安装或未运行)"
+    sv status tvcontrol 2>/dev/null || echo "(tvcontrol 未安装或未运行)"
+    echo
+    echo "== 8099 /api/status =="
+    curl -s --max-time 3 "http://127.0.0.1:$(read_cfg port 8099)/api/status" || echo "(代理无响应)"
+    echo
+    echo "== 最近日志 =="
+    tail -n 8 "$LOG" 2>/dev/null || echo "(还没有 station.log)"
+    ;;
+  log)
+    tail -n "${2:-40}" "$LOG" 2>/dev/null || echo "(还没有 station.log)"
+    ;;
+  control)
+    sv restart tvcontrol || { echo "重启 tvcontrol 失败"; exit 1; }
+    ;;
+  wake)
+    TV="$(read_cfg tv '')"
+    [ -n "$TV" ] || { echo "config.json 里没有 tv"; exit 1; }
+    adb connect "$TV" >/dev/null 2>&1 || true
+    adb -s "$TV" shell input keyevent 224
+    adb -s "$TV" shell wm dismiss-keyguard
+    echo "已向 $TV 发送唤醒键（WAKEUP）"
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

@@ -1,0 +1,138 @@
+package tvrc.core.test
+
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import tvrc.core.adb.AdbKeyStore
+import tvrc.core.adb.AdbTransport
+import tvrc.core.adb.AdbTvController
+import tvrc.core.adb.ShellResult
+import java.nio.file.Files
+
+/** P1-1：逐字断言下发命令、命令顺序、keyevent 85 补发次数与失败回执。 */
+class AdbTvControllerTest {
+
+    private val fake = FakeAdbClient()
+    private val transport = AdbTransport(
+        clientFactory = { fake },
+        keyStore = AdbKeyStore(Files.createTempDirectory("adbkey-p1").toFile()),
+        defaultTimeoutMs = 1_000
+    )
+    private val controller = AdbTvController(
+        transport = transport,
+        replenishAttempts = 3,
+        sleeper = { } // 测试不真睡 1.5s
+    )
+
+    private fun ok(stdout: String = "") = ShellResult(0, stdout, "")
+    private fun fail(stderr: String) = ShellResult(-1, "", stderr)
+
+    @Test
+    fun wakeSendsKeyevent224() {
+        val ack = controller.wake()
+        assertTrue(ack.ok)
+        assertEquals(listOf("input keyevent 224"), fake.commands)
+    }
+
+    @Test
+    fun wakeFailurePropagatesDetail() {
+        fake.respond({ it == "input keyevent 224" }) { fail("timeout after 25s") }
+        val ack = controller.wake()
+        assertFalse(ack.ok)
+        assertEquals("timeout after 25s", ack.detail)
+    }
+
+    @Test
+    fun launchSendsAmStartThenReplenishesWhileAlive() {
+        fake.respond({ it.startsWith("pidof ") }) { ok("4321\n") }
+        val ack = controller.launch("http://192.168.10.241:8100/live/5017134")
+
+        assertTrue(ack.ok)
+        assertEquals(
+            "am start -a android.intent.action.VIEW -d http://192.168.10.241:8100/live/5017134 -n is.xyz.mpv/.MPVActivity",
+            fake.commands.first()
+        )
+        assertEquals(3, fake.commands.count { it == "input keyevent 85" }, "存活时补满 3 次 keyevent 85")
+        assertEquals(3, fake.commands.count { it == "pidof is.xyz.mpv" })
+        assertEquals(7, fake.commands.size, "am start + 3x(pidof+keyevent85)")
+        assertTrue(ack.detail.contains("keyevent85 x3"))
+    }
+
+    @Test
+    fun launchEscapeSpecialCharsInUrl() {
+        fake.respond({ it.startsWith("pidof ") }) { ok("") }
+        controller.launch("http://192.168.10.241:8100/video/BV1xx?part=1&t=2")
+
+        val amStart = fake.commands.first()
+        assertTrue(amStart.contains("BV1xx\\?part=1\\&t=2"), "URL 里的 ? 和 & 必须转义：$amStart")
+    }
+
+    @Test
+    fun launchFailureShortCircuitsNoReplenish() {
+        fake.respond({ it.startsWith("am start") }) { fail("Activity class does not exist") }
+        val ack = controller.launch("http://h:8100/live/1")
+
+        assertFalse(ack.ok)
+        assertEquals("Activity class does not exist", ack.detail)
+        assertEquals(1, fake.commands.size, "起播失败不应再发补发命令")
+        assertEquals(0, fake.commands.count { it == "input keyevent 85" })
+    }
+
+    @Test
+    fun launchSkipsReplenishWhenAppNotAlive() {
+        fake.respond({ it.startsWith("pidof ") }) { ok("") }
+        fake.respond({ it == "ps -A" }) { ok("PID USER NAME\n") }
+        fake.respond({ it.startsWith("ps | grep") }) { ok("") }
+        val ack = controller.launch("http://h:8100/live/1")
+
+        assertTrue(ack.ok)
+        assertEquals(0, fake.commands.count { it == "input keyevent 85" }, "进程已死不补发")
+        assertTrue(ack.detail.contains("keyevent85 x0"))
+    }
+
+    @Test
+    fun stopSendsForceStop() {
+        val ack = controller.stop()
+        assertTrue(ack.ok)
+        assertEquals(listOf("am force-stop is.xyz.mpv"), fake.commands)
+    }
+
+    @Test
+    fun probeAliveHitsPidofOnly() {
+        fake.respond({ it == "pidof is.xyz.mpv" }) { ok("4321\n") }
+        val status = controller.probe()
+        assertTrue(status.alive)
+        assertEquals(listOf("pidof is.xyz.mpv"), fake.commands, "pidof 命中即止，不回退")
+    }
+
+    @Test
+    fun probeFallsBackToPsDashA() {
+        fake.respond({ it == "pidof is.xyz.mpv" }) { ok("") }
+        fake.respond({ it == "ps -A" }) { ok("PID USER NAME\n1024 u0_a123 is.xyz.mpv\n") }
+        val status = controller.probe()
+        assertTrue(status.alive)
+        assertEquals(listOf("pidof is.xyz.mpv", "ps -A"), fake.commands)
+    }
+
+    @Test
+    fun probeFallsBackToLegacyPsGrep() {
+        fake.respond({ it == "pidof is.xyz.mpv" }) { ok("") }
+        fake.respond({ it == "ps -A" }) { ok("PID USER NAME\n") }
+        fake.respond({ it.startsWith("ps | grep") }) { ok("u0_a123 1024 4 5 is.xyz.mpv\n") }
+        val status = controller.probe()
+        assertTrue(status.alive)
+        assertEquals(
+            listOf("pidof is.xyz.mpv", "ps -A", "ps | grep is.xyz.mpv"),
+            fake.commands,
+            "三级回退顺序必须固定"
+        )
+    }
+
+    @Test
+    fun probeAllFailMeansNotAlive() {
+        val status = controller.probe()
+        assertFalse(status.alive)
+        assertFalse(status.playing, "P1-2 之前 playing 恒 false（TODO 已在 KDoc 标注）")
+    }
+}

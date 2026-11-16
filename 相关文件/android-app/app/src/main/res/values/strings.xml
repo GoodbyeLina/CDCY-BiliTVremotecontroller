@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">B站轮播台</string>
+
+    <string name="setup_title">B站轮播台</string>
+    <string name="setup_subtitle">首次设置：先检查手机环境，再进入控制台</string>
+    <string name="setup_hint">第一次使用：\n1. 安装 Termux 和 Termux:Boot\n2. 把 termux-port 文件夹放到手机的 ~/tvstation\n3. 在 Termux 里粘贴复制的命令\n4. 回到这里点“重新检测”\n\n装好后，点“打开 Termux”可以随时查看服务状态。</string>
+    <string name="install_termux">安装 Termux（F-Droid）</string>
+    <string name="install_boot">安装 Termux:Boot（F-Droid）</string>
+    <string name="copy_cmd">复制后端安装/检查命令</string>
+    <string name="recheck">重新检测</string>
+    <string name="cmd_copied">命令已复制，去 Termux 长按粘贴</string>
+
+    <string name="err_title">控制服务没有启动</string>
+    <string name="err_msg">请先打开 Termux，确认 tvcontrol 正在运行。\n\n如果刚重启手机，请解锁后等 1–2 分钟；或在 Termux 里执行：\ncd ~/tvstation &amp;&amp; ./tvctl status</string>
+    <string name="retry">重新连接</string>
+    <string name="open_termux">打开 Termux</string>
+    <string name="termux_missing">没有找到 Termux，请先安装。</string>
+    <string name="hint">控制台地址：http://127.0.0.1:8098</string>
+</resources>

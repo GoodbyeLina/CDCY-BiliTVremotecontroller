@@ -1,0 +1,25 @@
+# ---- 构建产物（可再生成，不纳入版本管理）----
+core/build/
+build/
+.gradle/
+.kotlin/
+*.class
+
+# ---- IDE ----
+.idea/
+*.iml
+
+# ---- 操作系统 ----
+.DS_Store
+
+# ---- 临时/分析副本 ----
+.analysis/
+
+# ---- 自带 Gradle 发行版（约 145 MB，本地工具，绝不进库）----
+tools/gradle-8.10.2/
+
+# ---- 验证临时产物（L 清单红线：流媒体不落盘；万一有也拦住）----
+*.flv
+*.ts
+*.mp4
+verify-out/
