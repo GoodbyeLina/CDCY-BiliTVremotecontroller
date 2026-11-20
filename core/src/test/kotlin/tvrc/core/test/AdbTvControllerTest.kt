@@ -133,6 +133,61 @@ class AdbTvControllerTest {
     fun probeAllFailMeansNotAlive() {
         val status = controller.probe()
         assertFalse(status.alive)
-        assertFalse(status.playing, "P1-2 之前 playing 恒 false（TODO 已在 KDoc 标注）")
+        assertFalse(status.playing, "进程都不在，一定不在播")
+    }
+
+    // ---- P1-2：playing 由 dumpsys media_session 判定 ----
+
+    private fun controllerWith(dump: String) = AdbTvController(
+        transport = transport,
+        replenishAttempts = 3,
+        sleeper = { },
+        mediaSession = object : tvrc.core.media.MediaSessionTextSource {
+            override fun dumpMediaSessions(): String = dump
+        }
+    )
+
+    @Test
+    fun probePlayingWhenMediaSessionStateIs3() {
+        fake.respond({ it == "pidof is.xyz.mpv" }) { ok("4321\n") }
+        val dump = "Media sessions:\n" +
+            "  Session 2uhash: is.xyz.mpv/.MPVActivity (flag 0)\n" +
+            "      active true\n" +
+            "      PlaybackState: state=3, position=12000\n"
+        val status = controllerWith(dump).probe()
+        assertTrue(status.alive)
+        assertTrue(status.playing, "state=3 必须判成在播，否则看门狗会把正常播放误判卡死")
+        // dumpsys 走注入的 MediaSessionTextSource，不经过 adb，所以命令表里只有 pidof
+        assertEquals(listOf("pidof is.xyz.mpv"), fake.commands)
+    }
+
+    @Test
+    fun probeNotPlayingWhenMediaSessionStateIs2() {
+        fake.respond({ it == "pidof is.xyz.mpv" }) { ok("4321\n") }
+        val dump = "Media sessions:\n  Session 1: is.xyz.mpv/.MPVActivity\n      PlaybackState: state=2, position=0\n"
+        val status = controllerWith(dump).probe()
+        assertTrue(status.alive)
+        assertFalse(status.playing, "state=2 是暂停，不算在播")
+    }
+
+    @Test
+    fun probeSkipsDumpWhenProcessGone() {
+        val status = controllerWith("state=3").probe()
+        assertFalse(status.alive)
+        assertFalse(fake.commands.any { it.startsWith("dumpsys") }, "进程已死不该再去读 media_session")
+    }
+
+    @Test
+    fun probeSwallowsDumpFailure() {
+        fake.respond({ it == "pidof is.xyz.mpv" }) { ok("4321\n") }
+        val status = AdbTvController(
+            transport = transport,
+            sleeper = { },
+            mediaSession = object : tvrc.core.media.MediaSessionTextSource {
+                override fun dumpMediaSessions(): String = throw IllegalStateException("dumpsys permission denied")
+            }
+        ).probe()
+        assertTrue(status.alive)
+        assertFalse(status.playing, "dumpsys 报错只能算「未知」，不能抛异常打断引擎")
     }
 }
