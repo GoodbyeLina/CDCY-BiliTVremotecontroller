@@ -37,7 +37,7 @@ data class AppConfig(
     /** 未知键原样保留（二代 config.json 里可能有 control_port / setup_seen 等）。 */
     val extra: Map<String, JsonValue> = emptyMap()
 ) {
-    val tvAddress: String get() = if (tvPort == 5555) tvHost else "${tvHost}:@${tvPort}"
+    val tvAddress: String get() = if (tvPort == 5555) tvHost else "${tvHost}:${tvPort}"
 
     companion object {
         const val CURRENT_SCHEMA_VERSION = 1
@@ -61,7 +61,12 @@ data class ConfigCheck(val config: AppConfig, val errors: List<String>) {
 
 object ConfigValidator {
 
-    fun check(c: AppConfig): ConfigCheck {
+    fun check(c: AppConfig): ConfigCheck = check(c, requireContent = true)
+
+    /** 设备设置可先于内容库保存；实际播放的内容由 Android 端另行选择。 */
+    fun checkDeviceSettings(c: AppConfig): ConfigCheck = check(c, requireContent = false)
+
+    private fun check(c: AppConfig, requireContent: Boolean): ConfigCheck {
         val e = mutableListOf<String>()
         if (c.schemaVersion != AppConfig.CURRENT_SCHEMA_VERSION) {
             e += "schemaVersion=@${c.schemaVersion} 不受支持（当前 @${AppConfig.CURRENT_SCHEMA_VERSION}）"
@@ -69,8 +74,8 @@ object ConfigValidator {
         if (c.source !in setOf("live", "video", "series", "season", "up")) {
             e += "source=@${c.source} 不认识（可选 live/video/series/season/up）"
         }
-        if (c.source == "live" && c.rooms.isEmpty()) e += "source=live 时 rooms 不能为空"
-        if (c.source == "series" && (c.listMid == null || c.listId == null)) {
+        if (requireContent && c.source == "live" && c.rooms.isEmpty()) e += "source=live 时 rooms 不能为空"
+        if (requireContent && c.source == "series" && (c.listMid == null || c.listId == null)) {
             e += "source=series 需要 list_mid 与 list_id"
         }
         if (c.switchSeconds !in AppConfig.MIN_SWITCH_SECONDS..AppConfig.MAX_SWITCH_SECONDS) {
@@ -129,7 +134,8 @@ sealed interface LoadResult {
  */
 class JsonConfigRepository(
     private val store: ConfigStore,
-    private val path: String
+    private val path: String,
+    private val validate: (AppConfig) -> ConfigCheck = ConfigValidator::check
 ) {
 
     fun load(): LoadResult {
@@ -174,7 +180,7 @@ class JsonConfigRepository(
             idleTimeoutMinutes = (obj.field("idle_timeout_minutes").longOrNull() ?: 0L).toInt(),
             extra = extra
         )
-        return LoadResult.Ok(cfg, ConfigValidator.check(cfg))
+        return LoadResult.Ok(cfg, validate(cfg))
     }
 
     /**
@@ -191,7 +197,7 @@ class JsonConfigRepository(
 
     /** 保存；非法配置不落盘，返回错误列表。 */
     fun save(c: AppConfig): List<String> {
-        val chk = ConfigValidator.check(c)
+        val chk = validate(c)
         if (!chk.ok) return chk.errors
         store.writeText(path, toJson(c))
         return emptyList()

@@ -47,7 +47,7 @@ class AdbTransport(
     val keyPair: KeyPair by lazy { keyStore.loadOrCreate() }
 
     val publicKeyBase64: String by lazy {
-        AdbKeyStore.adbPublicKeyBase64(keyPair.public as RSAPublicKey, keyName)
+        AdbKeyStore.adbPublicKeyBase64(keyPair.public as RSAPublicKey)
     }
 
     fun isConnected(): Boolean = client != null
@@ -58,15 +58,19 @@ class AdbTransport(
         while (attempt < connectAttempts) {
             attempt++
             val candidate = clientFactory()
-            val ok = runCatching { candidate.connect() }.getOrDefault(false)
+            val ok = runCatching { candidate.connect() }.getOrElse {
+                lastError = it.message ?: it.javaClass.simpleName
+                false
+            }
             if (ok) {
                 client = candidate
                 connectCount++
+                lastError = null
                 return true
             }
             runCatching { candidate.close() }
         }
-        lastError = "connect failed after $connectAttempts attempts"
+        lastError = "connect failed after $connectAttempts attempts: " + (lastError ?: "ADB authentication rejected")
         return false
     }
 

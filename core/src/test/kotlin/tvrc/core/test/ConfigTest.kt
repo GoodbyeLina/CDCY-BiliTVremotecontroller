@@ -94,6 +94,66 @@ class ConfigTest {
     }
 
     @Test
+    fun deviceSettingsCanBeSavedBeforeImportingContent() {
+        val store = MemStore()
+        val repo = JsonConfigRepository(store, "/x/config.json", ConfigValidator::checkDeviceSettings)
+        val config = AppConfig(tvHost = "192.168.10.139")
+        assertEquals(emptyList<String>(), repo.save(config))
+        val reloaded = JsonConfigRepository(store, "/x/config.json", ConfigValidator::checkDeviceSettings)
+        val (loaded, errors) = reloaded.loadOrDefaults()
+        assertEquals(config, loaded)
+        assertTrue(errors.isEmpty())
+        assertTrue(loaded.rooms.isEmpty(), "设备保存不应伪造或填充播放内容")
+    }
+
+    @Test
+    fun deviceSettingsDoNotRequireLegacySeriesSelection() {
+        val config = AppConfig(source = "series", tvHost = "192.168.10.139")
+        assertTrue(ConfigValidator.checkDeviceSettings(config).ok)
+        assertFalse(ConfigValidator.check(config).ok)
+    }
+
+    @Test
+    fun playbackValidationStillRequiresLiveContent() {
+        val store = MemStore()
+        val config = AppConfig(tvHost = "192.168.10.139")
+        assertFalse(ConfigValidator.check(config).ok)
+        assertTrue(JsonConfigRepository(store, "/x/config.json").save(config).isNotEmpty())
+        assertTrue(store.writes.isEmpty())
+    }
+
+    @Test
+    fun invalidDeviceSettingsDoNotOverwriteSavedConfig() {
+        val store = MemStore()
+        val repo = JsonConfigRepository(store, "/x/config.json", ConfigValidator::checkDeviceSettings)
+        val valid = AppConfig(tvHost = "192.168.10.139")
+        assertTrue(repo.save(valid).isEmpty())
+        val savedText = store.text
+        listOf(
+            valid.copy(tvHost = ""),
+            valid.copy(tvPort = 0),
+            valid.copy(tvPort = 65536),
+            valid.copy(port = 8099),
+            valid.copy(port = 80),
+            valid.copy(switchSeconds = 0),
+            valid.copy(statusSeconds = 0)
+        ).forEach { invalid ->
+            assertTrue(repo.save(invalid).isNotEmpty(), "应拒绝：$invalid")
+            assertEquals(savedText, store.text)
+        }
+        assertEquals(1, store.writes.size)
+    }
+
+    @Test
+    fun customAdbPortSurvivesSaveAndReload() {
+        val store = MemStore()
+        val repo = JsonConfigRepository(store, "/x/config.json", ConfigValidator::checkDeviceSettings)
+        val config = AppConfig(tvHost = "192.168.10.139", tvPort = 5556)
+        assertTrue(repo.save(config).isEmpty())
+        assertEquals(config, (repo.load() as LoadResult.Ok).config)
+    }
+
+    @Test
     fun brokenFileFallsBackToDefaults() {
         val (cfg, notes) = JsonConfigRepository(MemStore("{ oops"), "/x/bad.json").loadOrDefaults()
         assertEquals(AppConfig(), cfg)

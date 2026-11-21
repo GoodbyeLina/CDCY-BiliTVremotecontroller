@@ -41,7 +41,9 @@ class AppGraph(
     private val sessionProvider: (AppConfig) -> Session = { liveOnlySession(it) },
     private val bindAddress: String = "0.0.0.0",
     private val allowDirectUrl: Boolean = false,
-    private val watchdogIntervalMs: Long = 10_000L
+    private val watchdogIntervalMs: Long = 10_000L,
+    /** 状态外流口（:app 的前台服务靠它刷通知与 UI；默认空实现，老测试零影响）。 */
+    private val onState: (PlaybackState) -> Unit = {}
 ) : Closeable {
 
     private val liveCache = ConcurrentHashMap<Long, String>()
@@ -121,6 +123,10 @@ class AppGraph(
     val isRunning: Boolean
         get() = started
 
+    /** 当前播放状态快照（:app 首屏用它渲染状态卡）。 */
+    val state: PlaybackState
+        get() = lastState
+
     /** 当前看门狗已自动重启次数（运维/测试观察用）。 */
     val watchdogRestartCount: Int
         get() = restartCount
@@ -167,6 +173,7 @@ class AppGraph(
 
     private fun onEngineState(state: PlaybackState) {
         lastState = state
+        runCatching { onState(state) }
         if (state is PlaybackState.Playing) {
             lastProgressMs = clock.nowMs()
             restartCount = 0

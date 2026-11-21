@@ -22,6 +22,18 @@ import java.util.concurrent.TimeUnit
 
 class AdbTransportTest {
 
+    @Test
+    fun connectionFailureKeepsTheOriginalCause(@TempDir dir: File) {
+        val t = AdbTransport({ object : tvrc.core.adb.AdbClient {
+            override fun connect(): Boolean = throw IOException("connection refused at tv:5555")
+            override fun shell(command: String, timeoutMs: Long) = ShellResult(0)
+            override fun close() = Unit
+        } }, AdbKeyStore(dir), connectAttempts = 1)
+        val result = t.shell("echo test")
+        assertFalse(result.ok)
+        assertTrue(result.stderr.contains("connection refused at tv:5555"))
+    }
+
     private fun transport(fake: FakeAdbClient, dir: File, retry: Boolean = true): AdbTransport =
         AdbTransport({ fake }, AdbKeyStore(dir), defaultTimeoutMs = 5_000, retryOnLoss = retry)
 
@@ -133,14 +145,19 @@ class AdbTransportTest {
         assertTrue(File(store.privateKeyPath).isFile)
 
         val name = "test@tvrc"
-        val blob = AdbKeyStore.adbPublicKeyBlob(kp1.public as RSAPublicKey, name)
-        assertEquals(AdbKeyStore.BLOB_STRUCT_SIZE + name.length + 1, blob.size)
+        val blob = AdbKeyStore.adbPublicKeyBlob(kp1.public as RSAPublicKey)
+        assertEquals(524, blob.size)
         val len = (blob[0].toInt() and 0xFF) or ((blob[1].toInt() and 0xFF) shl 8) or
             ((blob[2].toInt() and 0xFF) shl 16) or ((blob[3].toInt() and 0xFF) shl 24)
-        assertEquals(AdbKeyStore.BLOB_STRUCT_SIZE, len)
-        assertEquals(0, blob.last().toInt())
+        assertEquals(64, len)
+        val modulus = java.math.BigInteger(1, blob.copyOfRange(8, 264).reversedArray())
+        assertEquals(m1, modulus)
+        val rr = java.math.BigInteger(1, blob.copyOfRange(264, 520).reversedArray())
+        assertEquals(java.math.BigInteger.ONE.shiftLeft(4096).mod(m1), rr)
+        assertArrayEquals(byteArrayOf(1, 0, 1, 0), blob.copyOfRange(520, 524))
 
-        val b64 = AdbKeyStore.adbPublicKeyBase64(kp1.public as RSAPublicKey, name)
+        val b64 = AdbKeyStore.adbPublicKeyBase64(kp1.public as RSAPublicKey)
         assertArrayEquals(blob, Base64.getDecoder().decode(b64))
+        assertEquals("$b64 $name\u0000", String(AdbKeyStore.adbPublicKeyWire(kp1.public as RSAPublicKey, name)))
     }
 }
