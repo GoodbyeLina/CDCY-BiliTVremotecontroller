@@ -1,6 +1,7 @@
 package tvrc.core.test
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -40,11 +41,11 @@ class AdbPacketTest {
     }
 
     @Test
-    fun badCrcRejected() {
+    fun badChecksumRejected() {
         val bytes = AdbPacket(AdbPacket.A_WRTE, 1, 1, "hello".toByteArray()).encode()
         bytes[24] = (bytes[24].toInt() xor 0xFF).toByte()
         val ex = assertThrows(AdbProtocolException::class.java) { read(bytes) }
-        assertTrue(ex.message!!.contains("bad crc"))
+        assertTrue(ex.message!!.contains("bad checksum"))
     }
 
     @Test
@@ -71,8 +72,19 @@ class AdbPacketTest {
     }
 
     @Test
-    fun crc32MatchesKnownValue() {
+    fun checksumMatchesAdbUnsignedByteSum() {
         val data = "123456789".toByteArray(Charsets.US_ASCII)
-        assertEquals(0xCBF43926.toInt(), AdbPacket.crc32(data, 0, data.size))
+        assertEquals(477, AdbPacket.checksum(data, 0, data.size))
+        assertEquals(383, AdbPacket.checksum(byteArrayOf(0xff.toByte(), 0x80.toByte()), 0, 2))
+    }
+
+    @Test
+    fun cnxnMatchesIndependentWireFixture() {
+        // Legacy ADB CNXN: version 0x01000000, maxdata 256 KiB, host:: NUL, sum 562.
+        val fixture = "43 4e 58 4e 00 00 00 01 00 00 04 00 07 00 00 00 32 02 00 00 bc b1 a7 b1 68 6f 73 74 3a 3a 00"
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        val packet = AdbPacket(AdbPacket.A_CNXN, AdbPacket.A_VERSION, AdbPacket.MAX_DATA, "host::\u0000".toByteArray())
+        assertArrayEquals(fixture, packet.encode())
+        assertArrayEquals(packet.payload, read(fixture).payload)
     }
 }

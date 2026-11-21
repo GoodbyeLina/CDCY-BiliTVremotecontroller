@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import tvrc.core.config.AppConfig
+import tvrc.core.config.ConfigValidator
 import tvrc.core.config.FsConfigStore
 import tvrc.core.config.JsonConfigRepository
 import java.io.File
@@ -179,6 +180,50 @@ data class RunRecord(val atMs: Long, val kind: String, val text: String) {
     }
 }
 
+enum class TraceStatus(val label: String) {
+    INFO("进行中"),
+    SUCCESS("成功"),
+    WARNING("未确认"),
+    ERROR("失败")
+}
+
+/**
+ * 面向排障的结构化事件。与日志尾部并存，保留操作、目标、结果和耗时，
+ * 让用户在 App 内直接判断导入与播放停在哪一步。
+ */
+data class TraceEvent(
+    val atMs: Long,
+    val area: String,
+    val action: String,
+    val status: TraceStatus,
+    val summary: String,
+    val details: String = "",
+    val elapsedMs: Long? = null
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("at", atMs)
+        put("area", area)
+        put("action", action)
+        put("status", status.name)
+        put("summary", summary)
+        put("details", details)
+        if (elapsedMs != null) put("elapsedMs", elapsedMs)
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject): TraceEvent = TraceEvent(
+            atMs = o.optLong("at"),
+            area = o.optString("area"),
+            action = o.optString("action"),
+            status = runCatching { TraceStatus.valueOf(o.optString("status", "INFO")) }
+                .getOrDefault(TraceStatus.INFO),
+            summary = o.optString("summary"),
+            details = o.optString("details"),
+            elapsedMs = if (o.has("elapsedMs")) o.optLong("elapsedMs") else null
+        )
+    }
+}
+
 /**
  * 本地持久化（R-06「重启后内容仍在」）。
  *
@@ -192,9 +237,10 @@ class Store(context: Context) {
     private val libFile = File(dir, "library.json")
     val keyDir: File = File(dir, "adbkey").apply { mkdirs() }
     val logFile = File(dir, "tvrc.log")
+    private val traceFile = File(dir, "diagnostics.json")
 
     val configPath: String = File(dir, "config.json").path
-    private val repo = JsonConfigRepository(FsConfigStore(), configPath)
+    private val repo = JsonConfigRepository(FsConfigStore(), configPath, ConfigValidator::checkDeviceSettings)
 
     private var cfg: AppConfig = AppConfig()
     private var configErrors: List<String> = emptyList()
@@ -202,6 +248,7 @@ class Store(context: Context) {
     private var schedules: MutableList<ScheduleItem> = mutableListOf()
     private var monitors: MutableList<MonitorItem> = mutableListOf()
     private var runs: MutableList<RunRecord> = mutableListOf()
+    private var traces: MutableList<TraceEvent> = mutableListOf()
 
     /** 监控总开关与轮询间隔（R-08 自适应轮询的基础参数）。 */
     var monitorEnabled: Boolean = true
@@ -227,6 +274,11 @@ class Store(context: Context) {
         runs = json?.optJSONArray("runs")?.toList { RunRecord.fromJson(it) }?.toMutableList() ?: mutableListOf()
         monitorEnabled = json?.optBoolean("monitorEnabled", true) ?: true
         pollSeconds = json?.optInt("pollSeconds", 60) ?: 60
+        val traceJson = runCatching {
+            if (traceFile.isFile) JSONObject(traceFile.readText()) else null
+        }.getOrNull()
+        traces = traceJson?.optJSONArray("events")?.toList { TraceEvent.fromJson(it) }?.toMutableList()
+            ?: mutableListOf()
     }
 
     @Synchronized
@@ -250,6 +302,22 @@ class Store(context: Context) {
         }
     }
 
+    @Synchronized
+    private fun persistTraces() {
+        runCatching {
+            val root = JSONObject().apply {
+                put("version", 1)
+                put("events", JSONArray().also { a -> traces.forEach { a.put(it.toJson()) } })
+            }
+            val tmp = File(traceFile.absolutePath + ".tmp")
+            tmp.writeText(root.toString(2))
+            if (!tmp.renameTo(traceFile)) {
+                traceFile.writeText(root.toString(2))
+                tmp.delete()
+            }
+        }
+    }
+
     // ---- 配置 ----
 
     @Synchronized
@@ -260,7 +328,9 @@ class Store(context: Context) {
 
     @Synchronized
     fun saveConfig(c: AppConfig): List<String> {
-        val errors = repo.save(c)
+        val errors = runCatching { repo.save(c) }.getOrElse {
+            listOf("保存配置失败：" + (it.message ?: "请稍后重试"))
+        }
         if (errors.isEmpty()) {
             cfg = c
             configErrors = emptyList()
@@ -410,6 +480,50 @@ class Store(context: Context) {
         if (runs.size > 200) runs = runs.takeLast(200).toMutableList()
         persist()
         runCatching { logFile.appendText("[" + System.currentTimeMillis() + "] " + kind + ": " + text + "\n") }
+    }
+
+    // ---- 诊断事件 ----
+
+    @Synchronized
+    fun trace(
+        area: String,
+        action: String,
+        status: TraceStatus,
+        summary: String,
+        details: String = "",
+        elapsedMs: Long? = null
+    ) {
+        val event = TraceEvent(
+            atMs = System.currentTimeMillis(),
+            area = area,
+            action = action,
+            status = status,
+            summary = summary,
+            details = details.take(4_000),
+            elapsedMs = elapsedMs
+        )
+        traces += event
+        if (traces.size > 300) traces = traces.takeLast(300).toMutableList()
+        persistTraces()
+        val elapsed = elapsedMs?.let { "，耗时 ${it}ms" }.orEmpty()
+        runCatching {
+            logFile.appendText(
+                "[" + event.atMs + "] " + area + " / " + action + " [" + status.label + "] " +
+                    summary + elapsed + if (details.isBlank()) "\n" else "\n  " + details.replace("\n", "\n  ") + "\n"
+            )
+        }
+    }
+
+    @Synchronized
+    fun traces(limit: Int = 200): List<TraceEvent> = traces.takeLast(limit.coerceAtLeast(1)).reversed()
+
+    @Synchronized
+    fun clearDiagnostics() {
+        traces.clear()
+        runs.clear()
+        persistTraces()
+        persist()
+        runCatching { logFile.writeText("") }
     }
 
     private fun stableId(item: LibItem): String = when (item.kind) {

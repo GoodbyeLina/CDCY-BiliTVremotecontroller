@@ -178,6 +178,9 @@ JSON schema（`--json`）：
 
 | 日期 | 变更 |
 |---|---|
+| 2026-11-21 | APP 升至 alpha.4（versionCode 6）：新增持久化结构化诊断事件、App 内诊断对话框、导入失败/播放状态/电视回执/网络异常追踪，并扩充导出诊断包。配置 schema 与 core API 保持 1；详见 docs/dev/2026-11-21-diagnostics.md。 |
+| 2026-11-21 | APP 升至 alpha.3（versionCode 5）：依据 AOSP 修正 ADB 校验和、公钥编码与签名，分离自检连通/安装状态，增加 Android 15/16 屏幕安全区域适配。配置 schema 与 core API 保持 1；详见 docs/dev/2026-11-21-adb-and-phone-layout.md。 |
+| 2026-11-21 | APP 升至 3.0.0-alpha.2（versionCode 4），修复设备 IP 保存与表单草稿丢失；新增设备设置校验，旧播放校验保留，配置 schema/core API 仍为 1。详见 docs/dev/2026-11-21-device-config-fix.md。 |
 | 2026-11-13 | 建文档；162 条基线（路由统一后由 154 增至 162）；三契约冻结（core API v1）；未验证清单 H-1..H-10 全部标风险；记录 4 条技术债 |
 | 2026-11-13 | 按二代方案统一代理路由：/live?room= 、/live.flv 别名、/video?bvid= 、/status 与 /api/status；?url= 仅 allowDirectUrl=true 回环自测；MiniHttpServerTest 15 条；测试 162 条全绿 |
 | 2026-11-13 | **装配收口**：新增 core/src/main/kotlin/tvrc/core/AppGraph.kt（配置+代理+adb+状态机+看门狗+环形日志装配根，端口 0 自动回填 Session）与 bili/VideoUrlResolver.kt（view→playurl→durl）；新增 AppGraphTest 5 + VideoUrlResolverTest 3；测试 162→170 |

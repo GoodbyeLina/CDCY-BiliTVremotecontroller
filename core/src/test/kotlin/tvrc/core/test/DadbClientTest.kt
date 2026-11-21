@@ -2,6 +2,7 @@ package tvrc.core.test
 
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -10,7 +11,8 @@ import tvrc.core.adb.AdbPacket
 import tvrc.core.adb.AdbTimeoutException
 import tvrc.core.adb.DadbClient
 import java.nio.file.Files
-import java.security.Signature
+import javax.crypto.Cipher
+import java.util.Base64
 
 /**
  * DadbClient 的端到端协议测试：真实 TCP + 进程内假设备。
@@ -65,10 +67,16 @@ class DadbClientTest {
             assertEquals(AdbPacket.AUTH_SIGNATURE, auth.arg0)
             assertEquals(256, auth.payload.size, "2048 位 RSA 签名应为 256 字节")
 
-            val verifier = Signature.getInstance("SHA1withRSA")
-            verifier.initVerify(keyPair.public)
-            verifier.update(token)
-            assertTrue(verifier.verify(auth.payload), "签名必须能被设备用公钥验过")
+            // AOSP RSA_verify(NID_sha1, token): recover the padded digest without hashing the token.
+            val verifier = Cipher.getInstance("RSA/ECB/NoPadding")
+            verifier.init(Cipher.DECRYPT_MODE, keyPair.public)
+            val encoded = verifier.doFinal(auth.payload)
+            val digestInfo = "3021300906052b0e03021a05000414".chunked(2).map { it.toInt(16).toByte() }.toByteArray() + token
+            assertEquals(0, encoded[0].toInt())
+            assertEquals(1, encoded[1].toInt())
+            assertTrue(encoded.copyOfRange(2, 220).all { it == 0xff.toByte() })
+            assertEquals(0, encoded[220].toInt())
+            assertArrayEquals(digestInfo, encoded.copyOfRange(221, 256))
 
             conn.write(AdbPacket(AdbPacket.A_CNXN, AdbPacket.A_VERSION, AdbPacket.MAX_DATA, ByteArray(0)))
         }.start()
@@ -94,8 +102,11 @@ class DadbClientTest {
             val pub = conn.read()
             assertEquals(AdbPacket.A_AUTH, pub.command)
             assertEquals(AdbPacket.AUTH_RSAPUBLICKEY, pub.arg0)
-            assertTrue(pub.payload.size > 524, "公钥 blob 应含 524 字节结构 + 名字")
-            assertTrue(String(pub.payload, Charsets.ISO_8859_1).contains("unknown@tvrc"))
+            val text = String(pub.payload, Charsets.US_ASCII)
+            assertTrue(text.endsWith(" unknown@tvrc\u0000"))
+            val decoded = Base64.getDecoder().decode(text.substringBefore(' '))
+            assertEquals(524, decoded.size)
+            assertEquals(64, decoded[0].toInt())
 
             conn.write(AdbPacket(AdbPacket.A_CNXN, AdbPacket.A_VERSION, AdbPacket.MAX_DATA, ByteArray(0)))
         }.start()

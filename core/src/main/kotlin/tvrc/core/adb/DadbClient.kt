@@ -26,7 +26,8 @@ class DadbClient(
     private val port: Int = 5555,
     private val keyStore: AdbKeyStore,
     private val connectTimeoutMs: Int = 5_000,
-    private val banner: String = "host::tvrc"
+    private val banner: String = "host::tvrc",
+    private val authorizationTimeoutMs: Int = 30_000
 ) : AdbClient {
 
     private var socket: Socket? = null
@@ -37,11 +38,20 @@ class DadbClient(
 
     override fun connect(): Boolean {
         closeQuietly()
+        return try {
+            connectAndAuthenticate().also { if (!it) closeQuietly() }
+        } catch (e: Exception) {
+            closeQuietly()
+            throw e
+        }
+    }
+
+    private fun connectAndAuthenticate(): Boolean {
         val s = Socket()
+        socket = s
         s.connect(InetSocketAddress(host, port), connectTimeoutMs)
         s.soTimeout = connectTimeoutMs
         s.tcpNoDelay = true
-        socket = s
         input = DataInputStream(BufferedInputStream(s.getInputStream()))
         output = BufferedOutputStream(s.getOutputStream())
 
@@ -59,7 +69,13 @@ class DadbClient(
 
         var tokenRounds = 0
         while (true) {
-            val packet = AdbPacket.read(input!!)
+            val packet = try {
+                AdbPacket.read(input!!)
+            } catch (e: SocketTimeoutException) {
+                throw AdbTimeoutException(if (tokenRounds >= 2)
+                    "等待电视确认 ADB 授权超时，请在电视弹窗中选择允许后重试"
+                else "ADB 握手超时：$host:$port")
+            }
             when (packet.command) {
                 AdbPacket.A_CNXN -> return true
                 AdbPacket.A_AUTH -> {
@@ -69,11 +85,9 @@ class DadbClient(
                         val signature = AdbAuth.signToken(kp.private as PrivateKey, packet.payload)
                         send(AdbPacket(AdbPacket.A_AUTH, AdbPacket.AUTH_SIGNATURE, 0, signature))
                     } else if (tokenRounds == 2) {
-                        val blob = AdbKeyStore.adbPublicKeyBlob(kp.public as RSAPublicKey)
-                        val payload = ByteArray(blob.size + 1)
-                        System.arraycopy(blob, 0, payload, 0, blob.size)
-                        payload[blob.size] = 0
+                        val payload = AdbKeyStore.adbPublicKeyWire(kp.public as RSAPublicKey)
                         send(AdbPacket(AdbPacket.A_AUTH, AdbPacket.AUTH_RSAPUBLICKEY, 0, payload))
+                        s.soTimeout = authorizationTimeoutMs
                     } else {
                         return false
                     }

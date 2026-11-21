@@ -9,10 +9,15 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -44,6 +49,8 @@ class MainActivity : Activity() {
     private lateinit var store: Store
     private lateinit var content: LinearLayout
     private lateinit var navBar: LinearLayout
+    private lateinit var statusIndicator: TextView
+    private lateinit var statusText: TextView
 
     private var tab = 0
     private var filter = "全部"
@@ -54,15 +61,29 @@ class MainActivity : Activity() {
     private var importMessage = ""
     private var selfTest: List<SelfTest.Item> = emptyList()
     private var selfTesting = false
+    private var deviceDraft = Bundle()
 
-    private val refreshCb: () -> Unit = { runOnUiThread { render() } }
+    // 状态探针不能重建正在输入的设备表单，否则焦点、键盘和未保存的内容都会丢失。
+    private val refreshCb: () -> Unit = { runOnUiThread {
+        if (tab == 3) updateStatus() else render()
+    } }
     private val tabs = listOf("内容库", "节目单", "监控", "设备")
     private val filters = listOf("全部", "视频", "合集", "直播", "收藏")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        tab = savedInstanceState?.getInt("tab", 0) ?: 0
+        deviceDraft = savedInstanceState?.getBundle("deviceDraft") ?: Bundle()
         store = Ctl.store ?: Store(this).also { Ctl.store = it }
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(T.BG))
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        }
         buildRoot()
         askNotificationPermission()
         render()
@@ -80,12 +101,31 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("tab", tab)
+        outState.putBundle("deviceDraft", Bundle(deviceDraft))
+        super.onSaveInstanceState(outState)
+    }
+
     // ---------------------------------------------------------------- 骨架
 
     private fun buildRoot() {
         val root = LinearLayout(this).apply {
+            tag = "screenRoot"
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(T.BG)
+            setOnApplyWindowInsetsListener { view, insets ->
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                    val keyboard = insets.getInsets(WindowInsets.Type.ime())
+                    view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, keyboard.bottom))
+                } else {
+                    @Suppress("DEPRECATION")
+                    view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                        insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+                }
+                insets
+            }
         }
         root.addView(topBar())
 
@@ -110,6 +150,12 @@ class MainActivity : Activity() {
         root.addView(navBar)
 
         setContentView(root)
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.setSystemBarsAppearance(0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+        }
+        root.requestApplyInsets()
     }
 
     private fun topBar(): View {
@@ -119,26 +165,43 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(12))
         }
         val r = row()
-        r.addView(label("B站直播遥控器", 18f, T.TEXT, true))
+        r.addView(label("B站直播遥控器", 18f, T.TEXT, true).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
         r.addView(hpad(8))
         r.addView(badge("v" + TvrcVersion.APP, T.ACCENT))
         wrap.addView(r)
         val status = row()
-        status.addView(statusDot(if (Ctl.proxyPort > 0) T.OK else T.DIM))
+        statusIndicator = statusDot(T.DIM)
+        status.addView(statusIndicator)
         status.addView(hpad(6))
-        val line = buildString {
-            append(Ctl.stateText())
-            if (Ctl.playingTitle.isNotBlank()) append(" · ").append(Ctl.playingTitle)
-            append("　代理 ").append(if (Ctl.proxyPort > 0) ":" + Ctl.proxyPort else "未启动")
-            append("　电视 ").append(if (Ctl.tvAlive) "在线" else "离线")
+        statusText = label("", 12f, T.DIM).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        status.addView(label(line, 12f, T.DIM))
+        status.addView(statusText)
         wrap.addView(vpad(6))
         wrap.addView(status)
+        updateStatus()
         return wrap
     }
 
+    private fun updateStatus() {
+        statusIndicator.setTextColor(if (Ctl.proxyPort > 0) T.OK else T.DIM)
+        val line = buildString {
+            append(Ctl.stateText())
+            if (Ctl.playingTitle.isNotBlank()) append(" · ").append(Ctl.playingTitle)
+            append("\n代理 ").append(if (Ctl.proxyPort > 0) ":" + Ctl.proxyPort else "未启动")
+            append("　电视 ").append(if (Ctl.tvAlive) "在线" else "离线")
+        }
+        statusText.text = line
+    }
+
     private fun render() {
+        updateStatus()
         content.removeAllViews()
         when (tab) {
             0 -> renderHome()
@@ -360,6 +423,11 @@ class MainActivity : Activity() {
         if (importing) return
         importing = true
         importMessage = "正在识别…"
+        val startedAt = System.currentTimeMillis()
+        store.trace(
+            "导入", "识别输入", TraceStatus.INFO, "开始识别分享文案或链接",
+            "输入：" + raw.take(800)
+        )
         render()
         Ctl.bg {
             val importer = LinkImporter(
@@ -368,18 +436,52 @@ class MainActivity : Activity() {
                 RealBiliArchiveApi(UrlConnectionHttpText()),
                 ViewInfoApi(UrlConnectionHttpText())
             )
-            val outcome = importer.import(raw)
+            val outcome = try {
+                importer.import(raw)
+            } catch (e: Throwable) {
+                val reason = e.message ?: e.javaClass.simpleName
+                store.trace(
+                    "导入", "识别异常", TraceStatus.ERROR, reason,
+                    "异常类型：" + e.javaClass.name, System.currentTimeMillis() - startedAt
+                )
+                runOnUiThread {
+                    importing = false
+                    importMessage = "导入失败：" + reason
+                    toast(reason)
+                    render()
+                }
+                return@bg
+            }
             runOnUiThread {
                 importing = false
                 when (outcome) {
                     is ImportOutcome.Ok -> {
                         val saved = outcome.items.map { store.upsert(it) }
                         store.log("import", outcome.note + " → " + saved.joinToString { it.title })
+                        val grouped = saved.groupingBy { it.kindLabel }.eachCount()
+                            .entries.joinToString("、") { it.value.toString() + " 条" + it.key }
+                        store.trace(
+                            "导入", "完成", TraceStatus.SUCCESS,
+                            "已导入 " + saved.size + " 条（" + grouped + "）",
+                            buildString {
+                                append(outcome.note)
+                                saved.forEach { item ->
+                                    append("\n目标：").append(diagnosticTarget(item))
+                                }
+                            },
+                            System.currentTimeMillis() - startedAt
+                        )
                         importMessage = "已导入 " + saved.size + " 条"
                         toast("已导入：" + saved.joinToString("、") { it.title })
                     }
 
                     is ImportOutcome.Fail -> {
+                        store.trace(
+                            "导入", "完成", TraceStatus.ERROR, outcome.reason,
+                            if (outcome.hops.isEmpty()) "输入：" + raw.take(800)
+                            else "解析步骤：\n" + outcome.hops.joinToString("\n"),
+                            System.currentTimeMillis() - startedAt
+                        )
                         importMessage = "导入失败：" + outcome.reason
                         toast(outcome.reason)
                     }
@@ -642,6 +744,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- 设备
 
     private fun renderDevice() {
+        configInputs.clear()
         val cfg = store.config()
         content.addView(section("电视与代理"))
 
@@ -673,7 +776,7 @@ class MainActivity : Activity() {
         val saveRow = row()
         saveRow.addView(button("保存配置", true) { saveConfigFromUi() })
         saveRow.addView(hpad(8))
-        saveRow.addView(button("重新加载", false) { store.reload(); render() })
+        saveRow.addView(button("重新加载", false) { store.reload(); deviceDraft.clear(); render() })
         content.addView(saveRow)
         content.addView(vpad(10))
 
@@ -688,7 +791,10 @@ class MainActivity : Activity() {
                 val rr = row()
                 rr.addView(statusDot(if (r.ok) T.OK else if (r.required) T.ERR else T.WARN))
                 rr.addView(hpad(6))
-                val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                val col = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
                 col.addView(label(r.name + if (r.required) "" else "（可选）", 13f, T.TEXT, true))
                 col.addView(label(r.detail, 11f, T.DIM))
                 rr.addView(col)
@@ -700,12 +806,12 @@ class MainActivity : Activity() {
 
         content.addView(section("诊断"))
         val d = card()
-        d.addView(label("导出诊断包：配置 + 最近日志，便于远程排查", 11f, T.DIM))
+        d.addView(label("查看最近的导入、播放、电视反馈与失败原因；导出时包含配置、运行环境和完整事件。", 11f, T.DIM))
         d.addView(vpad(8))
         val dr = row()
-        dr.addView(button("导出诊断", false) { exportDiag() })
+        dr.addView(button("查看诊断", true) { showDiagnosticsDialog() })
         dr.addView(hpad(8))
-        dr.addView(button("清空日志", false) { runCatching { store.logFile.writeText("") }; toast("已清空") })
+        dr.addView(button("导出诊断", false) { exportDiag() })
         d.addView(dr)
         content.addView(d)
 
@@ -729,14 +835,23 @@ class MainActivity : Activity() {
         wrap.addView(vpad(4))
         val e = EditText(this).apply {
             this.hint = hint
-            setText(value)
+            setText(deviceDraft.getString(name) ?: value)
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(T.TEXT)
             setHintTextColor(T.DIM)
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(T.CARD_HI, 12, 1, T.LINE)
             inputType = if (numeric) InputType.TYPE_CLASS_NUMBER else InputType.TYPE_CLASS_TEXT
+            isSingleLine = true
+            minHeight = dp(48)
             tag = name
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: Editable?) {
+                    deviceDraft.putString(name, s?.toString().orEmpty())
+                }
+            })
         }
         configInputs[name] = e
         wrap.addView(e)
@@ -763,12 +878,23 @@ class MainActivity : Activity() {
         )
         val errors = store.saveConfig(fresh)
         if (errors.isEmpty()) {
+            deviceDraft.clear()
             store.log("config", "配置已保存：" + fresh.tvAddress)
+            store.trace(
+                "配置", "保存", TraceStatus.SUCCESS, "配置已保存",
+                "电视：" + fresh.tvAddress + "\n代理端口：" + fresh.port +
+                    "\n播放器：" + fresh.mpvPkg + "/" + fresh.mpvActivity
+            )
             toast("已保存，重启服务生效")
             Ctl.service?.let { PlaybackService.ensureRunning(this) }
         } else {
+            store.trace(
+                "配置", "保存", TraceStatus.ERROR, "配置没有通过校验",
+                errors.joinToString("\n")
+            )
             AlertDialog.Builder(this).setTitle("配置没通过校验").setMessage(errors.joinToString("\n"))
                 .setPositiveButton("知道了", null).show()
+            return
         }
         render()
     }
@@ -785,10 +911,97 @@ class MainActivity : Activity() {
                 selfTesting = false
                 selfTest = results
                 val failed = results.count { it.required && !it.ok }
+                store.trace(
+                    "自检", "完成",
+                    if (failed == 0) TraceStatus.SUCCESS else TraceStatus.ERROR,
+                    if (failed == 0) "全部必检项通过" else "有 " + failed + " 项必检未通过",
+                    results.joinToString("\n") { it.name + "：" + it.detail }
+                )
                 toast(if (failed == 0) "自检通过" else "有 " + failed + " 项必检项没通过")
                 render()
             }
         }
+    }
+
+    private fun showDiagnosticsDialog() {
+        val events = store.traces(150)
+        val body = TextView(this).apply {
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(T.TEXT)
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setTextIsSelectable(true)
+            text = if (events.isEmpty()) {
+                "还没有诊断记录。\n\n完成一次导入、自检或播放后，再打开这里即可看到每一步的结果。"
+            } else {
+                formatDiagnosticEvents(events)
+            }
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        val summary = TextView(this).apply {
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(T.DIM)
+            text = buildString {
+                append("当前：").append(Ctl.stateText())
+                append("\n本机：").append(LanAddress.localIpv4())
+                append("　代理：").append(if (Ctl.proxyPort > 0) Ctl.proxyPort.toString() else "未启动")
+                append("\n电视：").append(store.config().tvAddress)
+                append("　状态：").append(if (Ctl.tvAlive) "在线" else "离线")
+                if (store.configProblems().isNotEmpty()) {
+                    append("\n配置问题：").append(store.configProblems().joinToString("；"))
+                }
+            }
+            setPadding(dp(14), dp(12), dp(14), dp(10))
+        }
+        val scroll = ScrollView(this).apply {
+            addView(body)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { height = dp(430) }
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(summary)
+            addView(View(this@MainActivity).apply {
+                setBackgroundColor(T.LINE)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
+            })
+            addView(scroll)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("诊断记录")
+            .setView(container)
+            .setPositiveButton("导出") { _, _ -> exportDiag() }
+            .setNeutralButton("清空记录") { _, _ ->
+                confirm("清空诊断记录？", "导入、播放、自检和日志都会清空，电视与内容配置不受影响。") {
+                    store.clearDiagnostics()
+                    toast("诊断记录已清空")
+                    render()
+                }
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun formatDiagnosticEvents(events: List<TraceEvent>): String {
+        val time = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+        return events.joinToString("\n\n") { e ->
+            buildString {
+                append("[").append(time.format(Date(e.atMs))).append("] ")
+                append(e.status.label).append(" · ").append(e.area).append(" / ").append(e.action)
+                if (e.elapsedMs != null) {
+                    append("  (").append(String.format(Locale.CHINA, "%.1f", e.elapsedMs / 1000.0)).append(" 秒)")
+                }
+                append("\n").append(e.summary)
+                if (e.details.isNotBlank()) append("\n").append(e.details)
+            }
+        }
+    }
+
+    private fun diagnosticTarget(item: LibItem): String = when (item.kind) {
+        ItemKind.LIVE -> "直播 #" + (item.roomId ?: 0) + " · " + item.title
+        ItemKind.VIDEO -> "视频 · " + item.title + " · " + (item.bvid ?: "无 BV")
+        ItemKind.SERIES -> "合集 · " + item.title + " · " + item.bvids.size + " 集"
     }
 
     private fun exportDiag() {
@@ -800,15 +1013,27 @@ class MainActivity : Activity() {
         sb.append("版本：").append(TvrcVersion.APP).append(" / core ").append(TvrcVersion.CORE_API).append("\n")
         sb.append("设备：").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
             .append(" / Android ").append(Build.VERSION.RELEASE).append("\n")
+        sb.append("SDK：").append(Build.VERSION.SDK_INT).append("\n")
         sb.append("本机 IP：").append(LanAddress.localIpv4()).append("\n")
         sb.append("代理端口：").append(Ctl.proxyPort).append("\n")
-        sb.append("状态：").append(Ctl.stateText()).append("\n\n")
+        sb.append("状态：").append(Ctl.stateText()).append("\n")
+        sb.append("电视：").append(store.config().tvAddress)
+            .append(" / ").append(if (Ctl.tvAlive) "在线" else "离线")
+            .append(" / ").append(if (Ctl.tvPlaying) "确认在播" else "未确认在播").append("\n")
+        sb.append("配置问题：").append(
+            if (store.configProblems().isEmpty()) "无" else store.configProblems().joinToString("；")
+        ).append("\n")
+        sb.append("内容库：").append(store.items().size).append(" 条\n")
+        sb.append("最近播放：").append(Ctl.playingTitle.ifBlank { "无" }).append("\n\n")
         sb.append("--- config.json ---\n")
         runCatching { sb.append(File(store.configPath).readText()) }
+        sb.append("\n\n--- 最近诊断事件 ---\n")
+        val events = store.traces(200)
+        sb.append(if (events.isEmpty()) "无\n" else formatDiagnosticEvents(events)).append("\n")
         sb.append("\n\n--- 日志尾部 ---\n")
         runCatching {
             val all = store.logFile.readLines()
-            sb.append(all.takeLast(200).joinToString("\n"))
+            sb.append(all.takeLast(500).joinToString("\n"))
         }
         runCatching {
             file.writeText(sb.toString())

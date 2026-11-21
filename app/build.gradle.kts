@@ -12,8 +12,8 @@ android {
         applicationId = "tvrc.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "3.0.0-alpha.1"
+        versionCode = 6
+        versionName = "3.0.0-alpha.4"
     }
 
     compileOptions {
@@ -36,6 +36,10 @@ android {
     lint {
         abortOnError = false
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 kotlin {
@@ -44,4 +48,6 @@ kotlin {
 
 dependencies {
     implementation(project(":core"))
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

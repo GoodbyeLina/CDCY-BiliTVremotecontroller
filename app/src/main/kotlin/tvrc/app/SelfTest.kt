@@ -1,12 +1,16 @@
 package tvrc.app
 
 import tvrc.core.adb.AdbKeyStore
-import tvrc.core.adb.AdbTransport
+import tvrc.core.adb.AdbClient
 import tvrc.core.adb.DadbClient
 import tvrc.core.bili.RealBiliLiveApi
 import tvrc.core.bili.UrlConnectionHttpText
 import tvrc.core.config.AppConfig
 import java.net.ServerSocket
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.io.IOException
 
 /**
  * 向导自检（R-09/H-3 的落地版）。
@@ -55,28 +59,10 @@ object SelfTest {
             results += Item("电视 ADB", true, false, "电视地址为空：填电视 IP（电视设置里看）")
         } else {
             val keyStore = AdbKeyStore(store.keyDir, "adbkey")
-            var alive = false
-            var packages = ""
-            runCatching {
-                val t = AdbTransport({ DadbClient(cfg.tvHost, cfg.tvPort, keyStore) }, keyStore, defaultTimeoutMs = 12_000)
-                alive = t.isAlive(cfg.mpvPkg)
-                if (t.isAlive("android")) packages = t.shell("pm list packages", 10_000L).stdout
-                t.close()
-            }
-            results += Item(
-                "电视 ADB " + cfg.tvHost + ":" + cfg.tvPort, true, alive,
-                if (alive) "已连上，mpv 进程在跑" else "连不上：电视开启「ADB 网络调试」，确认同网段、端口 5555；首次连接要在电视上点允许"
-            )
-            val mpvOk = packages.contains(cfg.mpvPkg)
-            results += Item(
-                "播放器 " + cfg.mpvPkg, false, mpvOk,
-                if (mpvOk) "已安装" else "电视上没装 mpv：装上 " + cfg.mpvPkg + " 后再试（不装则无法播放）"
-            )
-            val browserOk = packages.contains("com.android.tv.settings") || packages.contains("com.android.browser")
-            results += Item(
-                "电视桌面/浏览器", false, browserOk,
-                if (browserOk) "系统组件正常" else "没探到系统浏览器（部分电视用内置播放器，可忽略）"
-            )
+            val adbResults = checkAdb(cfg) { DadbClient(cfg.tvHost, cfg.tvPort, keyStore) }
+            results += adbResults
+            Ctl.onStatusChanged(Ctl.proxyPort, adbResults.first().ok, Ctl.tvPlaying && adbResults.first().ok)
+            adbResults.forEach { store.log("self-test", it.name + ": " + it.detail) }
         }
 
         // 6. 内容库
@@ -86,5 +72,56 @@ object SelfTest {
             "共 " + store.items().size + " 条（直播 " + liveCount + "）；空的话先回「内容库」导入一个链接"
         )
         return results
+    }
+
+    /** 连通性、授权、安装状态分别检查，不以播放器进程或名为 android 的进程判断 ADB。 */
+    internal fun checkAdb(cfg: AppConfig, clientFactory: () -> AdbClient): List<Item> {
+        var connected = false
+        var failure = ""
+        var packages: Set<String>? = null
+        var packageFailure = ""
+        try {
+            clientFactory().use { client ->
+                if (!client.connect()) throw IOException("电视拒绝了 ADB 认证，请在电视上允许调试")
+                val probe = client.shell("echo TVRC_ADB_OK", 8_000)
+                if (!probe.ok || probe.stdout.trim() != "TVRC_ADB_OK") {
+                    throw IOException("ADB shell 未返回验证结果：" + probe.stderr.ifBlank { probe.stdout })
+                }
+                connected = true
+                try {
+                    val list = client.shell("pm list packages", 10_000)
+                    val names = list.stdout.lineSequence().map { it.trim() }
+                        .filter { it.startsWith("package:") }.map { it.removePrefix("package:") }.toSet()
+                    if (list.ok && names.isNotEmpty()) packages = names
+                    else packageFailure = "应用列表查询失败：" + list.stderr.ifBlank { list.stdout }
+                } catch (e: Exception) {
+                    packageFailure = e.message ?: e.javaClass.simpleName
+                }
+            }
+        } catch (e: Exception) {
+            failure = when (e) {
+                is ConnectException -> "电视未接受连接，请确认网络 ADB 端口 ${cfg.tvPort} 已开启"
+                is NoRouteToHostException -> "无法到达电视，请检查同一局域网及路由器设备隔离"
+                is SocketTimeoutException -> "连接电视超时，请检查 IP、网络 ADB 端口及设备隔离"
+                else -> e.message ?: e.javaClass.simpleName
+            }
+        }
+        val unknown = if (!connected) "尚未检测：需先连接并授权电视 ADB" else "尚未确认：$packageFailure"
+        val installed = packages?.contains(cfg.mpvPkg) == true
+        val browser = packages?.any { it == "com.android.tv.settings" || it == "com.android.browser" } == true
+        return listOf(
+            Item("电视 ADB ${cfg.tvHost}:${cfg.tvPort}", true, connected,
+                if (connected) "已连接、已授权，shell 命令正常" else failure),
+            Item("播放器 ${cfg.mpvPkg}", true, installed, when {
+                packages == null -> unknown
+                installed -> "已安装（无需预先运行播放器）"
+                else -> "未安装：请在电视安装 ${cfg.mpvPkg} 后重试"
+            }),
+            Item("电视桌面/浏览器", false, browser, when {
+                packages == null -> unknown
+                browser -> "系统组件正常"
+                else -> "未发现对应系统组件，部分电视可忽略"
+            })
+        )
     }
 }

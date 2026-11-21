@@ -3,7 +3,6 @@ package tvrc.core.adb
 import java.io.DataInputStream
 import java.io.EOFException
 import java.io.IOException
-import java.util.zip.CRC32
 
 class AdbProtocolException(message: String) : IOException(message)
 
@@ -11,7 +10,8 @@ class AdbProtocolException(message: String) : IOException(message)
  * ADB 二进制协议的一帧。
  *
  * 帧结构（全部小端）：
- *   command(4) | arg0(4) | arg1(4) | data_length(4) | data_crc32(4) | magic(4) | payload(data_length)
+ *   command(4) | arg0(4) | arg1(4) | data_length(4) | data_check(4) | magic(4) | payload(data_length)
+ * data_check 是无符号字节累加和（旧文档将字段命名为 data_crc32，但并非 CRC32）。
  *   magic = command 按位取反（用来挡住错位/串包）
  */
 data class AdbPacket(val command: Int, val arg0: Int, val arg1: Int, val payload: ByteArray) {
@@ -22,7 +22,7 @@ data class AdbPacket(val command: Int, val arg0: Int, val arg1: Int, val payload
         putInt(out, 4, arg0)
         putInt(out, 8, arg1)
         putInt(out, 12, payload.size)
-        putInt(out, 16, crc32(payload, 0, payload.size))
+        putInt(out, 16, checksum(payload, 0, payload.size))
         putInt(out, 20, command.inv())
         System.arraycopy(payload, 0, out, HEADER_SIZE, payload.size)
         return out
@@ -58,11 +58,10 @@ data class AdbPacket(val command: Int, val arg0: Int, val arg1: Int, val payload
         const val A_VERSION = 0x01000000
         const val MAX_DATA = 256 * 1024
 
-        fun crc32(data: ByteArray, offset: Int, length: Int): Int {
-            if (length == 0) return 0
-            val crc = CRC32()
-            crc.update(data, offset, length)
-            return crc.value.toInt()
+        fun checksum(data: ByteArray, offset: Int, length: Int): Int {
+            var sum = 0
+            for (i in offset until offset + length) sum += data[i].toInt() and 0xff
+            return sum
         }
 
         fun read(input: DataInputStream): AdbPacket {
@@ -76,7 +75,7 @@ data class AdbPacket(val command: Int, val arg0: Int, val arg1: Int, val payload
             val arg0 = getInt(header, 4)
             val arg1 = getInt(header, 8)
             val length = getInt(header, 12)
-            val checksum = getInt(header, 16)
+            val expectedChecksum = getInt(header, 16)
             val magic = getInt(header, 20)
             if (magic != command.inv()) {
                 throw AdbProtocolException("bad magic for command 0x" + Integer.toHexString(command))
@@ -90,8 +89,8 @@ data class AdbPacket(val command: Int, val arg0: Int, val arg1: Int, val payload
             } catch (e: EOFException) {
                 throw AdbProtocolException("connection closed while reading payload")
             }
-            if (length > 0 && crc32(payload, 0, length) != checksum) {
-                throw AdbProtocolException("bad crc32 for command 0x" + Integer.toHexString(command))
+            if (checksum(payload, 0, length) != expectedChecksum) {
+                throw AdbProtocolException("bad checksum for command 0x" + Integer.toHexString(command))
             }
             return AdbPacket(command, arg0, arg1, payload)
         }

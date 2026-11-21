@@ -8,7 +8,7 @@
 
 ## 当前开发需求与完成情况
 
-**更新：2026-11-20。三代已落地独立 `:app` 模块（包名 `tvrc.app`，versionName `3.0.0-alpha.1`），首版可安装 APK 见 `dist/TVStationRemote-3.0.0-alpha.1-debug.apk`；`:core` 回归 184 条测试全绿（0 失败）。真机与电视验收（H-1..H-10）仍未做；现成的 0.2.0 APK 仍是依赖 Termux 的旧版。**
+**更新：2026-11-21。当前版本 `3.0.0-alpha.4`（包名 `tvrc.app`，versionCode 6）新增 App 内诊断记录，可查看每次导入、直播检查、播放提交、电视回执、错误详情和耗时；导出的诊断包同步扩充运行环境与结构化事件。详见 [诊断记录说明](docs/dev/2026-11-21-diagnostics.md)。此前的 ADB、一加 Ace 3 屏幕适配和设备 IP 保存修复均保留。手机与电视的端到端功能仍需真机验收。**
 
 下面按用户提出的 8 项需求排列。**“部分完成”表示存在底层代码，不能当作用户已经能使用。** 详细任务编号、代码依据、解析样例和逐项验收见 [完整需求与验收表](docs/requirements-v3.md)。
 
@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | 1 | 视频支持 BV、电脑网页网址、手机分享链接 | **首版已实现（待真机）**：标准网页/BV/分享短链走同一入口；App 内自动展开 `b23.tv` 短链并从整段分享文案提取 URL | 真机验收：网页与分享原文直接导入并播放 | 用户给出的网页和分享原文都能导入、显示正确视频并播放，无需手动截取 BV |
 | 2 | 直播支持房间号、网页网址、手机分享链接 | **首版已实现（待真机）**：房间号、直播网页、分享短链均可识别；播放前查 `roomInfo()` 判开播，未开播明确提示 | 真机用 `612978` 网页及分享链接验收 | 用户给出的房间 `612978` 网页及分享链接均可识别；开播时可播放，未开播时明确提示 |
-| 3 | 完成独立、功能完整的 Android App | **首版已交付（待真机）**：`:app` 模块 + `dist/TVStationRemote-3.0.0-alpha.1-debug.apk`，不依赖 Termux、零第三方依赖 | 真机安装后完成配置、连接电视、视频/直播/切台/停止/后台运行验证 | 安装一个 APK 即可配置和使用，不依赖 Termux；真实手机与电视完成视频、直播、切台、停止及后台运行验证 |
+| 3 | 完成独立、功能完整的 Android App | **alpha.4 已交付（电视播放待验）**：`:app` 模块 + `dist/TVStationRemote-3.0.0-alpha.4-diagnostics.apk`，不依赖 Termux。手机端已验证视频与直播链接可成功导入 | 真机安装后完成连接电视、视频/直播/切台/停止/后台运行验证 | 安装一个 APK 即可配置和使用，不依赖 Termux；真实手机与电视完成视频、直播、切台、停止及后台运行验证 |
 | 4 | 改善前端视觉与首次使用引导 | **首版已实现（待真机）**：原生四页签（内容库/节目单/开播监控/设备）+ 六项自检向导（接口/局域网/端口/ADB/播放器/内容库） | 真机走查小屏布局、空列表与失败态 | 新用户跟随引导可完成首次播放；加载、空列表、失败状态明确；小屏和深浅色显示正常 |
 | 5 | 解析 B站视频合集和列表 | **首版已实现（待真机）**：合集/系列分页展开、去重保序、整组入队，视图接口补全标题与集数 | 多页合集真机导入验证 | 多页合集可完整导入，可单集播放或按序播放；不可用条目有原因提示 |
 | 6 | 首页展示视频/直播列表，能找回以前看过的内容 | **首版已实现（待真机）**：`library.json` 持久内容库 + 收藏 + 最近播放 + 搜索，重复导入按内容标识合并 | 重启 App 验证内容与观看记录仍在 | 重启 App 后内容仍在；可切换列表、查看最近看过并再次播放；重复导入不重复建项 |
@@ -30,6 +30,49 @@
 **开发顺序：**首版（链接修复与独立 APK → 内容库、合集与原生引导 → 节目单、定时和开播监控）已于 2026-11-20 一次性落地，见上表状态；剩余工作是逐项真机验收与长连接优化。前端原型已展示，视觉细节仍可调整；视频分 P、收藏夹范围、监控数量和精确续播需求见完整需求表中的待定项。
 
 维护要求：功能完成时同步更新本页和 [详细需求状态](docs/requirements-v3.md)，附实现提交、测试结果与真机记录；不能仅凭有代码或界面原型标记“完成”。
+
+---
+
+## 下载、安装与诊断
+
+最新安装包：[`dist/TVStationRemote-3.0.0-alpha.4-diagnostics.apk`](dist/TVStationRemote-3.0.0-alpha.4-diagnostics.apk)
+
+SHA-256：`677091A9141A5944042C173FAD229033F834F3F10ED1606884BF167949007A40`
+
+### 安装和首次配置
+
+1. 下载上面的 APK。系统提示时允许当前文件管理器或浏览器“安装未知应用”。
+2. 覆盖安装时保留原有配置和内容库；同一签名可直接升级，不需要先卸载。
+3. 手机和电视连接到同一个局域网，在“设备”页填写电视 IP，ADB 端口通常为 `5555`。
+4. 点击“保存配置”，再点击“开始自检”。电视首次弹出 ADB 调试授权时，在电视上选择“允许”。
+5. 自检确认“电视 ADB”和“播放器”通过后，回到“内容库”粘贴 B站视频或直播分享链接并导入。
+
+### 日常操作
+
+- 视频、合集或直播导入后，点击条目的“播放”。
+- 顶部状态会依次显示空闲、启动中、播放中或具体错误；电视在线状态也会单独显示。
+- 播放失败时，先打开“设备 → 诊断 → 查看诊断”，再用“开始自检”复查网络、代理端口、电视 ADB 和播放器。
+
+### 查看诊断记录
+
+进入“设备”页，在“诊断”区域点击“查看诊断”。对话框会直接显示最近的操作时间、模块、动作、成功/失败状态、视频 BV、直播房间号、电视回执、错误详情和耗时，无需先导出文件。
+
+可重点查看以下状态：
+
+- “成功”：导入完成、直播正在开播、代理启动或电视接受起播命令。
+- “进行中”：请求已提交，仍在等待网络或电视回执。
+- “未确认”：接口无法查询或媒体尚未被后续探测确认。
+- “失败”：给出了失败阶段、错误分类和具体错误详情。
+
+### 导出并发送诊断日志
+
+1. 在“设备 → 诊断”点击“导出诊断”。
+2. App 会显示文件绝对路径，文件名类似 `diag-20261121-230000.txt`，通常位于：
+   `Android/data/tvrc.app/files/diag-YYYYMMDD-HHMMSS.txt`。
+3. 使用手机文件管理器进入上述目录，把 `diag-*.txt` 文件发送给项目维护者，并简单说明操作时间和问题现象。
+4. 如需在导出前查看内容，可先点击“查看诊断”；导出文件还包含完整配置、运行环境、结构化事件和最近 500 行原始日志。
+
+诊断文件可能包含电视/手机局域网 IP、代理端口和导入链接；发送时应仅提供给项目维护者。
 
 ---
 
@@ -67,7 +110,7 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17      # 或：source tools/env-jdk1
 tools/gradle-8.10.2/bin/gradle :core:test --no-daemon --console=plain
 ```
 
-- 期望输出 `BUILD SUCCESSFUL`，**184 条测试通过**（历史基线 170 条 + 短链展开/播放状态探针等 14 条）。首次约 2 分钟（下 Kotlin 编译器），之后增量 6–10 秒。
+- 期望输出 `BUILD SUCCESSFUL`。alpha.4 当前回归为 **核心 191 项 + Android 16 项全部通过**。首次构建约 2 分钟，之后增量构建会更快。
 - **不需要 Android SDK / Studio / AVD / 电视**（内核是纯 JVM）。
 - 无电视自检：`./tools/verify-on-tv.sh --dry-run`（输出 5 PASS / 0 FAIL / 6 SKIP，退出码 0）。
 
@@ -91,7 +134,7 @@ B站直播遥控器app开发/
 ├── app/                             # ★ 三代 Android 壳（包名 tvrc.app：四页签 + 前台服务 + 开机自启）
 │   ├── build.gradle.kts             # AGP 8.5.2 / Kotlin 2.0.21 / compileSdk 35 / minSdk 26
 │   └── src/main/kotlin/tvrc/app/    # Ui.kt Store.kt Engine.kt SelfTest.kt BootReceiver.kt MainActivity.kt
-├── dist/                            # 构建产出的三代 APK（*.apk 已 git 忽略）
+├── dist/                            # 最新三代 APK（发布包定向入库，其余构建产物忽略）
 ├── tools/
 │   ├── env-jdk17.sh                 # source 后 JAVA_HOME 指向 JDK 17
 │   ├── verify-on-tv.sh              # 交接自检（--dry-run 无电视可跑 / --json）
@@ -109,7 +152,7 @@ B站直播遥控器app开发/
 └── ui参考/                           # 静态 UI 示意（index.html / setup.html，非可运行代码）
 ```
 
-> 构建产物目录 `core/build/`、`app/build/`、`dist/`、`.gradle/`、`.kotlin/`、`tools/gradle-8.10.2/`、`local.properties` 均已被 `.gitignore` 忽略，可随时删除重建；不要提交进 git。
+> 构建产物目录 `core/build/`、`app/build/`、`.gradle/`、`.kotlin/`、`tools/gradle-8.10.2/`、`local.properties` 已被 `.gitignore` 忽略。`dist/` 只为用户发布保留最新 `TVStationRemote-*.apk`。
 
 ---
 
@@ -143,20 +186,20 @@ B站直播遥控器app开发/
 ## 5. 交接从这里开始
 
 1. 读 **HANDOFF.md** 全文（尤其 §6 未验证清单、§7 技术债、§9 接手顺序）。
-2. 按 HANDOFF §2 配好 JDK 17 + 仓库内 Gradle，跑通 §1 的 170 条测试。
+2. 按 HANDOFF §2 配好 JDK 17 + 仓库内 Gradle，跑通核心与 Android 测试。
 3. 需要电视/真机的部分（H-1..H-10）按 HANDOFF §6 逐条验证并回填结果。
-4. 每步都跑 `:core:test`（184 条不许减）+ `./tools/verify-on-tv.sh`。
+4. 每步都跑 `:core:test :app:testDebugUnitTest` + `./tools/verify-on-tv.sh`。
 
 ---
 
 ## 6. 命令速查
 
 ```bash
-# 全量回归（184 条）
+# 全量回归（核心 191 项 + Android 16 项）
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 tools/gradle-8.10.2/bin/gradle :core:cleanTest :core:test --no-daemon
 
 # 构建三代 APK（需 Android SDK；产物 app/build/outputs/apk/debug/app-debug.apk）
-JAVA_HOME=/opt/homebrew/opt/openjdk@17 tools/gradle-8.10.2/bin/gradle :core:test :app:assembleDebug --no-daemon
+JAVA_HOME=/opt/homebrew/opt/openjdk@17 tools/gradle-8.10.2/bin/gradle :core:test :app:testDebugUnitTest :app:assembleDebug --no-daemon
 
 # 单个测试类
 tools/gradle-8.10.2/bin/gradle :core:test --tests 'tvrc.core.test.PlaybackEngineTest' --no-daemon

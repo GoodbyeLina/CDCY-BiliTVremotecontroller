@@ -362,6 +362,10 @@ class PlaybackService : Service() {
     private var monitorNextAt = 0L
     private var scheduleNextAt = 0L
     private var backoffMs = 0L
+    private var lastTvConnected = false
+    private var lastTvPlaying = false
+    private var lastTracedPlayback = ""
+    private var currentPlaybackStartedAt = 0L
     private val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA)
 
     override fun onCreate() {
@@ -416,6 +420,10 @@ class PlaybackService : Service() {
         if (item == null) {
             Ctl.say("内容库里找不到这条（可能已删除）")
             store.log("play", "找不到条目 " + itemId)
+            store.trace(
+                "播放", "准备", TraceStatus.ERROR, "内容库里找不到目标",
+                "条目 ID：" + itemId + "，触发来源：" + reasonLabel(reason)
+            )
             return
         }
         Ctl.bg { startItem(item, reason) }
@@ -428,10 +436,20 @@ class PlaybackService : Service() {
     }
 
     private fun startItem(item: LibItem, reason: String) {
+        val startedAt = System.currentTimeMillis()
+        store.trace(
+            "播放", "请求", TraceStatus.INFO, reasonLabel(reason) + "播放请求已收到",
+            diagnosticItem(item)
+        )
+        currentPlaybackStartedAt = startedAt
         val cfg = store.config()
         if (cfg.tvHost.isBlank()) {
             Ctl.say("还没填电视地址：先去「设备」页做完向导")
             store.log("error", "电视地址为空，无法播放")
+            store.trace(
+                "播放", "准备", TraceStatus.ERROR, "电视地址为空，无法播放",
+                diagnosticItem(item), System.currentTimeMillis() - startedAt
+            )
             return
         }
         val session = try {
@@ -439,6 +457,11 @@ class PlaybackService : Service() {
         } catch (e: Exception) {
             Ctl.say(e.message ?: "内容不可播放")
             store.log("error", "构建播放会话失败：" + (e.message ?: ""))
+            store.trace(
+                "播放", "构建会话", TraceStatus.ERROR, e.message ?: "内容不可播放",
+                diagnosticItem(item) + "\n异常类型：" + e.javaClass.name,
+                System.currentTimeMillis() - startedAt
+            )
             return
         }
         if (session == null) return
@@ -448,8 +471,21 @@ class PlaybackService : Service() {
             else -> "手动"
         }
         store.log("play", note + "播放：" + item.title)
+        store.trace(
+            "播放", "会话创建", TraceStatus.SUCCESS, "播放会话已创建",
+            diagnosticItem(item) + "\n模式：" + session.mode +
+                "\n目标：" + session.items.joinToString("\n") +
+                "\n切换间隔：" + session.effectiveSwitchSeconds + " 秒" +
+                "\n电视：" + cfg.tvAddress + "，播放器：" + cfg.mpvActivity,
+            System.currentTimeMillis() - startedAt
+        )
         Ctl.onPlaying(item.title)
         store.touchPlayed(item.id)
+        store.trace(
+            "播放", "提交", TraceStatus.INFO, "正在启动代理并等待电视回执",
+            "代理端口：" + (if (cfg.port > 0) cfg.port else 8100) +
+                "，本机地址：" + cfg.publicHost.ifBlank { LanAddress.localIpv4() }
+        )
         playSession(session)
         updateNotification(Ctl.stateText() + " · " + item.title)
     }
@@ -462,13 +498,31 @@ class PlaybackService : Service() {
             ItemKind.LIVE -> {
                 val roomId = item.roomId ?: run {
                     Ctl.say("这条直播没有房间号")
+                    store.trace("播放", "直播检查", TraceStatus.ERROR, "直播条目没有房间号", diagnosticItem(item))
                     return null
                 }
-                val info = runCatching { liveApi().roomInfo(roomId) }.getOrNull()
-                if (info != null && !info.live) {
+                val infoResult = runCatching { liveApi().roomInfo(roomId) }
+                val info = infoResult.getOrNull()
+                if (infoResult.isFailure) {
+                    val error = infoResult.exceptionOrNull()
+                    store.trace(
+                        "播放", "直播检查", TraceStatus.WARNING, "无法查询开播状态，继续尝试播放",
+                        "房间：" + roomId + "\n异常：" + (error?.message ?: error?.javaClass?.name ?: "未知错误")
+                    )
+                } else if (info != null && !info.live) {
                     Ctl.say("「" + item.title + "」未开播，等开播后再试")
                     store.log("monitor", "房间 " + roomId + " 未开播，已跳过")
+                    store.trace(
+                        "播放", "直播检查", TraceStatus.WARNING, "直播间当前未开播，已跳过",
+                        diagnosticItem(item)
+                    )
                     return null
+                } else if (info != null) {
+                    store.trace(
+                        "播放", "直播检查", TraceStatus.SUCCESS, "直播间正在开播",
+                        "房间：" + roomId + "\n标题：" + info.title +
+                            (if (info.online > 0) "\n人气：" + info.online else "")
+                    )
                 }
                 Session(
                     rooms = listOf("http://" + host + ":" + port + "/live?room=" + roomId),
@@ -480,8 +534,13 @@ class PlaybackService : Service() {
             ItemKind.VIDEO -> {
                 val bvid = item.bvid ?: run {
                     Ctl.say("这条视频没有 BV 号")
+                    store.trace("播放", "视频检查", TraceStatus.ERROR, "视频条目没有 BV 号", diagnosticItem(item))
                     return null
                 }
+                store.trace(
+                    "播放", "视频检查", TraceStatus.SUCCESS, "视频目标有效",
+                    "BV：" + bvid + "\n标题：" + item.title
+                )
                 Session(
                     videos = listOf(VideoTargets.target(bvid, host, port)),
                     switchSeconds = tvrc.core.MAX_SWITCH_SECONDS,
@@ -492,6 +551,7 @@ class PlaybackService : Service() {
             ItemKind.SERIES -> {
                 if (item.bvids.isEmpty()) {
                     Ctl.say("合集是空的，请重新导入")
+                    store.trace("播放", "合集检查", TraceStatus.ERROR, "合集没有可播放的剧集", diagnosticItem(item))
                     return null
                 }
                 Session(
@@ -512,11 +572,20 @@ class PlaybackService : Service() {
             val bound = runCatching { g.start() }.getOrElse { e ->
                 Ctl.say("代理启动失败：" + (e.message ?: "端口被占用？"))
                 store.log("error", "代理启动失败：" + (e.message ?: ""))
+                store.trace(
+                    "播放", "代理启动", TraceStatus.ERROR, "代理或播放引擎启动失败",
+                    "端口：" + cfg.port + "\n异常：" + e.javaClass.name + ": " + (e.message ?: "未知错误")
+                )
                 startedGraph = false
                 return
             }
             Ctl.onStatusChanged(bound, Ctl.tvAlive, Ctl.tvPlaying)
             store.log("app", "代理已启动 :" + bound)
+            store.trace(
+                "播放", "代理启动", TraceStatus.SUCCESS, "媒体代理已启动",
+                "监听端口：" + bound + "\n本机地址：" +
+                    cfg.publicHost.ifBlank { LanAddress.localIpv4() }
+            )
         } else {
             graph?.engine?.start(session)
         }
@@ -552,9 +621,64 @@ class PlaybackService : Service() {
             videoResolver = RealVideoUrlResolver(http),
             fetcher = HttpUrlConnectionFetcher(baseHeaders = emptyMap()),
             sessionProvider = { initial },
-            onState = { s -> Ctl.onState(s) }
+            onState = { s ->
+                Ctl.onState(s)
+                tracePlaybackState(s)
+            }
         )
     }
+
+    private fun tracePlaybackState(state: PlaybackState) {
+        val signature = when (state) {
+            is PlaybackState.Idle -> "idle-" + state.reason
+            is PlaybackState.Starting -> "starting-" + state.index + "-" + state.attempt
+            is PlaybackState.Playing -> "playing-" + state.index + "-" + state.startedAtMs
+            is PlaybackState.Switching -> "switching-" + state.fromIndex + "-" + state.toIndex
+            is PlaybackState.Error -> "error-" + state.kind + "-" + state.atMs
+        }
+        if (signature == lastTracedPlayback) return
+        lastTracedPlayback = signature
+        when (state) {
+            is PlaybackState.Idle -> store.trace(
+                "播放", "状态", TraceStatus.INFO, "播放已停止",
+                when (state.reason) {
+                    IdleReason.USER_STOP -> "原因：用户停止"
+                    IdleReason.IDLE_TIMEOUT -> "原因：空闲超时"
+                    IdleReason.NEVER_STARTED -> "原因：尚未开始"
+                }
+            )
+            is PlaybackState.Starting -> store.trace(
+                "播放", "等待电视", TraceStatus.INFO,
+                "已发送唤醒和起播命令，等待回执",
+                "项目：" + state.session.target(state.index) +
+                    "\n尝试：" + (state.attempt + 1) + "/3" +
+                    "\n模式：" + state.session.mode
+            )
+            is PlaybackState.Playing -> store.trace(
+                "播放", "电视回执", TraceStatus.SUCCESS, "电视已接受起播命令",
+                "项目：" + state.session.target(state.index) +
+                    "\n下一次切换：" + state.nextSwitchAtMs + "（毫秒时间戳）" +
+                    "\n说明：这表示电视播放器接受了命令；媒体是否持续可播由后续探测确认。",
+                playbackElapsed()
+            )
+            is PlaybackState.Switching -> store.trace(
+                "播放", "换台", TraceStatus.INFO,
+                "正在从第 " + (state.fromIndex + 1) + " 项切到第 " + (state.toIndex + 1) + " 项",
+                "目标：" + state.session.target(state.toIndex) +
+                    "\n原因：" + state.reason
+            )
+            is PlaybackState.Error -> store.trace(
+                "播放", "电视回执", TraceStatus.ERROR, state.kind.userText,
+                "错误分类：" + state.kind +
+                    "\n自动恢复： " + if (state.kind.autoRecoverable) "允许" else "不允许" +
+                    "\n详情：" + state.detail.ifBlank { "电视或播放引擎没有返回更多信息" },
+                playbackElapsed()
+            )
+        }
+    }
+
+    private fun playbackElapsed(): Long? =
+        if (currentPlaybackStartedAt > 0) System.currentTimeMillis() - currentPlaybackStartedAt else null
 
     private fun liveApi(): BiliLiveApi = RealBiliLiveApi(UrlConnectionHttpText())
 
@@ -563,6 +687,7 @@ class PlaybackService : Service() {
             runCatching { graph?.stop() }
             Ctl.onUserStopped()
             store.log("play", "用户停止")
+            store.trace("播放", "停止", TraceStatus.INFO, "用户主动停止播放")
             updateNotification("已停止")
         }
     }
@@ -600,8 +725,34 @@ class PlaybackService : Service() {
     private fun probeTv(): Boolean {
         val controller = tv ?: return false
         val status = runCatching { controller.probe() }.getOrNull() ?: return false
-        Ctl.onStatusChanged(Ctl.proxyPort, status.alive, status.playing)
-        return true
+        val ping = transport?.shell("echo TVRC_ADB_OK", 5_000)
+        val connected = ping?.ok == true && ping.stdout.trim() == "TVRC_ADB_OK"
+        Ctl.onStatusChanged(Ctl.proxyPort, connected, status.playing)
+        if (connected != lastTvConnected || status.playing != lastTvPlaying) {
+            store.trace(
+                "电视", "状态变化",
+                if (connected) TraceStatus.SUCCESS else TraceStatus.ERROR,
+                "ADB " + (if (connected) "在线" else "离线") +
+                    "，播放状态" + (if (status.playing) "已确认" else "未确认"),
+                "进程存活：" + status.alive +
+                    (if (ping?.ok != true) "\nADB 详情：" + (ping?.stderr ?: "未返回") else "")
+            )
+            lastTvConnected = connected
+            lastTvPlaying = status.playing
+        }
+        return connected
+    }
+
+    private fun reasonLabel(reason: String): String = when (reason) {
+        "schedule" -> "节目单"
+        "monitor" -> "开播抢播"
+        else -> "手动"
+    }
+
+    private fun diagnosticItem(item: LibItem): String = when (item.kind) {
+        ItemKind.LIVE -> "类型：直播\n房间：" + (item.roomId ?: 0) + "\n标题：" + item.title
+        ItemKind.VIDEO -> "类型：视频\nBV：" + (item.bvid ?: "无") + "\n标题：" + item.title
+        ItemKind.SERIES -> "类型：合集\n标题：" + item.title + "\n集数：" + item.bvids.size
     }
 
     private fun runDueSchedules() {
@@ -627,7 +778,14 @@ class PlaybackService : Service() {
             store.markScheduleRun(s.id, runKey)
             store.log("schedule", "到点执行：" + s.title + "（" + s.timeText() + "）")
             if (s.wake) {
-                runCatching { tv?.wake() }
+                val wake = runCatching { tv?.wake() }
+                if (wake.isFailure || wake.getOrNull()?.ok == false) {
+                    store.trace(
+                        "节目单", "唤醒电视", TraceStatus.WARNING, "唤醒电视没有成功，继续尝试播放",
+                        "节目：" + s.title +
+                            "\n详情：" + (wake.exceptionOrNull()?.message ?: wake.getOrNull()?.detail ?: "播放器未连接")
+                    )
+                }
                 Thread.sleep(1_200L)
                 runCatching { tv?.wake() }
             }
@@ -644,9 +802,15 @@ class PlaybackService : Service() {
         }
         var failures = 0
         for (m in list) {
-            val info = runCatching { liveApi().roomInfo(m.roomId) }.getOrNull()
+            val result = runCatching { liveApi().roomInfo(m.roomId) }
+            val info = result.getOrNull()
             if (info == null) {
                 failures++
+                store.trace(
+                    "直播监控", "开播检查", TraceStatus.WARNING, "无法查询直播间状态",
+                    "房间：" + m.roomId + "\n标题：" + m.title +
+                        "\n异常：" + (result.exceptionOrNull()?.message ?: "接口返回空")
+                )
                 continue
             }
             val changed = info.live != m.lastLive

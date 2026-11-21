@@ -12,7 +12,7 @@ import java.util.Base64
 
 /**
  * ADB RSA 私钥持久化（F-02）：必须存到 filesDir 且权限 600，否则每次重启都弹授权。
- * 同时生成 ADB 公钥 wire 格式（ADB_AUTH 用的那种 524 字节结构 + 名字）。
+ * 同时生成 ADB 公钥 wire 格式（524 字节结构的 Base64 + 空格 + 名字 + NUL）。
  */
 class AdbKeyStore(private val dir: File, private val name: String = "adbkey") {
 
@@ -65,10 +65,10 @@ class AdbKeyStore(private val dir: File, private val name: String = "adbkey") {
 
         /**
          * ADB 公钥 wire 格式：
-         *   uint32 len(=524) | uint32 n0inv | uint8 n[256] LE | uint8 rr[256] LE | uint32 exponent LE
-         * 后面接 " name\0"。
+         *   uint32 modulus_size_words(=64) | uint32 n0inv | uint8 n[256] LE | uint8 rr[256] LE | uint32 exponent LE
+         * 此函数只返回 524 字节二进制结构，文本编码由 adbPublicKeyWire 完成。
          */
-        fun adbPublicKeyBlob(pub: RSAPublicKey, name: String = "unknown@tvrc"): ByteArray {
+        fun adbPublicKeyBlob(pub: RSAPublicKey): ByteArray {
             val n = pub.modulus
             val e = pub.publicExponent
             val n0 = n.and(BigInteger("FFFFFFFF", 16)).toLong()
@@ -77,18 +77,19 @@ class AdbKeyStore(private val dir: File, private val name: String = "adbkey") {
             val rr = BigInteger.ONE.shiftLeft(4096).mod(n)
 
             val out = java.io.ByteArrayOutputStream()
-            out.write(uint32(BLOB_STRUCT_SIZE.toLong()))
+            out.write(uint32(64))
             out.write(uint32(n0inv))
             out.write(fixedLittleEndian(n, 256))
             out.write(fixedLittleEndian(rr, 256))
             out.write(uint32(e.toLong()))
-            out.write(name.toByteArray(Charsets.ISO_8859_1))
-            out.write(0)
             return out.toByteArray()
         }
 
-        fun adbPublicKeyBase64(pub: RSAPublicKey, name: String = "unknown@tvrc"): String =
-            Base64.getEncoder().encodeToString(adbPublicKeyBlob(pub, name))
+        fun adbPublicKeyBase64(pub: RSAPublicKey): String =
+            Base64.getEncoder().encodeToString(adbPublicKeyBlob(pub))
+
+        fun adbPublicKeyWire(pub: RSAPublicKey, name: String = "unknown@tvrc"): ByteArray =
+            (adbPublicKeyBase64(pub) + " " + name + "\u0000").toByteArray(Charsets.US_ASCII)
 
         private fun uint32(value: Long): ByteArray = byteArrayOf(
             (value and 0xFF).toByte(),

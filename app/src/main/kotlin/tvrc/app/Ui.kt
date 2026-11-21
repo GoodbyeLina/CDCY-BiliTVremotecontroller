@@ -89,6 +89,7 @@ fun Context.button(
     setPadding(dp(14), dp(8), dp(14), dp(8))
     background = if (primary) rounded(T.ACCENT, 12) else rounded(T.CARD_HI, 12, 1, T.LINE)
     isClickable = true
+    minHeight = dp(48)
     setOnClickListener { onTap() }
 }
 
