@@ -185,6 +185,84 @@ class DadbClientTest {
     }
 
     @Test
+    fun handshakeTimeoutIdentifiesFirstPacketStageAndKeepsCause() {
+        val server = FakeAdbServer { conn ->
+            conn.read() // CNXN received, but device sends neither CNXN nor AUTH.
+            Thread.sleep(300)
+        }.start()
+        try {
+            DadbClient("127.0.0.1", server.port, store, connectTimeoutMs = 100).use { client ->
+                val error = assertThrows(AdbTimeoutException::class.java) { client.connect() }
+                assertTrue(error.message!!.contains("未收到 CNXN/AUTH"))
+                assertTrue(error.cause is java.net.SocketTimeoutException)
+                assertThrows(java.io.IOException::class.java) { client.shell("echo hi", 100) }
+            }
+        } finally {
+            server.stopAndCheck()
+        }
+    }
+
+    @Test
+    fun handshakeTimeoutDistinguishesSignatureFromPendingUserAuthorization() {
+        val server = FakeAdbServer { conn ->
+            conn.read()
+            conn.write(AdbPacket(AdbPacket.A_AUTH, AdbPacket.AUTH_TOKEN, 0, ByteArray(20)))
+            assertEquals(AdbPacket.AUTH_SIGNATURE, conn.read().arg0)
+            Thread.sleep(300)
+        }.start()
+        try {
+            DadbClient("127.0.0.1", server.port, store, connectTimeoutMs = 100).use { client ->
+                val error = assertThrows(AdbTimeoutException::class.java) { client.connect() }
+                assertTrue(error.message!!.contains("已发送 AUTH 签名"))
+            }
+        } finally {
+            server.stopAndCheck()
+        }
+    }
+
+    @Test
+    fun publicKeyApprovalUsesAuthorizationTimeoutInsteadOfTcpConnectTimeout() {
+        val server = FakeAdbServer { conn ->
+            conn.read()
+            repeat(2) {
+                conn.write(AdbPacket(AdbPacket.A_AUTH, AdbPacket.AUTH_TOKEN, 0, ByteArray(20)))
+                val auth = conn.read()
+                assertEquals(if (it == 0) AdbPacket.AUTH_SIGNATURE else AdbPacket.AUTH_RSAPUBLICKEY, auth.arg0)
+            }
+            Thread.sleep(300)
+            conn.write(AdbPacket(AdbPacket.A_CNXN, AdbPacket.A_VERSION, AdbPacket.MAX_DATA, ByteArray(0)))
+        }.start()
+        try {
+            DadbClient("127.0.0.1", server.port, store, connectTimeoutMs = 100,
+                authorizationTimeoutMs = 2_000).use { client -> assertTrue(client.connect()) }
+        } finally {
+            server.stopAndCheck()
+        }
+    }
+
+    @Test
+    fun publicKeyTimeoutIdentifiesPendingUserAuthorization() {
+        val server = FakeAdbServer { conn ->
+            conn.read()
+            repeat(2) {
+                conn.write(AdbPacket(AdbPacket.A_AUTH, AdbPacket.AUTH_TOKEN, 0, ByteArray(20)))
+                conn.read()
+            }
+            Thread.sleep(300)
+        }.start()
+        try {
+            DadbClient("127.0.0.1", server.port, store, connectTimeoutMs = 2_000,
+                authorizationTimeoutMs = 100).use { client ->
+                val error = assertThrows(AdbTimeoutException::class.java) { client.connect() }
+                assertTrue(error.message!!.contains("已发送公钥"))
+                assertTrue(error.message!!.contains("100ms"))
+            }
+        } finally {
+            server.stopAndCheck()
+        }
+    }
+
+    @Test
     fun shellBeforeConnectFails() {
         val client = DadbClient("127.0.0.1", 5555, store)
         assertThrows(java.io.IOException::class.java) { client.shell("echo hi", 1000) }

@@ -8,7 +8,7 @@
 
 ## 当前开发需求与完成情况
 
-**更新：2026-11-21。当前版本 `3.0.0-alpha.4`（包名 `tvrc.app`，versionCode 6）新增 App 内诊断记录，可查看每次导入、直播检查、播放提交、电视回执、错误详情和耗时；导出的诊断包同步扩充运行环境与结构化事件。详见 [诊断记录说明](docs/dev/2026-11-21-diagnostics.md)。此前的 ADB、一加 Ace 3 屏幕适配和设备 IP 保存修复均保留。手机与电视的端到端功能仍需真机验收。**
+**更新：2026-11-23。当前版本 `3.0.0-alpha.6`（包名 `tvrc.app`，versionCode 8）新增媒体请求/首字节/传输量与速率/错误分类诊断、有限请求重试和安全恢复边界；保护手动停止及点播观看进度，无可靠媒体位置时不按时间误重启。保留 alpha.5 的导入粘贴、ADB 自检连接复用与直播允许列表修复。详见 [稳定性增强与真机复测](docs/dev/2026-11-23-stability.md) 及 [上一轮现场修复](docs/dev/2026-11-23-field-fixes.md)。自动化不代表电视流畅度、直播音画已验收。**
 
 下面按用户提出的 8 项需求排列。**“部分完成”表示存在底层代码，不能当作用户已经能使用。** 详细任务编号、代码依据、解析样例和逐项验收见 [完整需求与验收表](docs/requirements-v3.md)。
 
@@ -35,9 +35,17 @@
 
 ## 下载、安装与诊断
 
-最新安装包：[`dist/TVStationRemote-3.0.0-alpha.4-diagnostics.apk`](dist/TVStationRemote-3.0.0-alpha.4-diagnostics.apk)
+最新安装包：[`dist/TVStationRemote-3.0.0-alpha.6-stability.apk`](dist/TVStationRemote-3.0.0-alpha.6-stability.apk)
 
-SHA-256：`677091A9141A5944042C173FAD229033F834F3F10ED1606884BF167949007A40`
+SHA-256：`f6c662b7a3a68c17326f75a074a354a2a2bc6b643b5b4363b4354c7b0f4d7112`
+
+本轮本地验证：`:core:test` 218 条、`:app:testDebugUnitTest` 33 条，合计 251 条通过、0 失败/错误/跳过；`:app:assembleDebug` 成功。自动化不等于直播真机通过。旧 alpha.4 / alpha.5 安装包保留。
+
+### 用户与测试人员入口
+
+- [alpha.6 完整更新说明](docs/releases/v3.0.0-alpha.6.md)：针对的问题、修改、新增能力与验证边界。
+- [日志排查指南](docs/user/log-troubleshooting.md)：按现象找问题、错误速查、逐步检查及反馈模板。
+- [alpha.6 测试执行 SOP](docs/testing/alpha.6-test-sop.md)：P0/P1任务表、通过标准、证据与结果记录。
 
 ### 安装和首次配置
 

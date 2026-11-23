@@ -50,6 +50,48 @@ class SelfTestAdbTest {
         assertTrue(client.closed)
     }
 
+    @Test fun runningTransportIsProbedWithoutOpeningOrClosingAnotherConnection() {
+        val running = Client(ShellResult(0, "package:is.xyz.mpv\n"))
+        val result = SelfTest.checkAdb(config, activeShell = running::shell) {
+            error("must not create a second ADB connection")
+        }
+        assertTrue(result[0].ok)
+        assertTrue(result[1].ok)
+        assertEquals(listOf("echo TVRC_ADB_OK", "pm list packages"), running.commands)
+        assertFalse(running.closed)
+    }
+
+    @Test fun failedRunningProbeDoesNotTrustCachedStateOrTryAnotherConnection() {
+        val commands = mutableListOf<String>()
+        val result = SelfTest.checkAdb(config, activeShell = { command, _ ->
+            commands += command
+            ShellResult(-1, stderr = "busy: another adb command is still running")
+        }) { error("must not create a second ADB connection") }
+        assertFalse(result[0].ok)
+        assertTrue(result[0].detail.contains("busy"))
+        assertTrue(result[1].detail.startsWith("尚未检测"))
+        assertEquals(listOf("echo TVRC_ADB_OK"), commands)
+    }
+
+    @Test fun runningProbeMustReturnExpectedEchoNotJustSuccessfulExit() {
+        val result = SelfTest.checkAdb(config, activeShell = { _, _ -> ShellResult(0, "other") }) {
+            error("must not create a second ADB connection")
+        }
+        assertFalse(result[0].ok)
+        assertTrue(result[0].detail.contains("other"))
+    }
+
+    @Test fun runningPackageFailureDoesNotInvalidateSuccessfulEcho() {
+        val running = Client(ShellResult(1, stderr = "permission denied"))
+        val result = SelfTest.checkAdb(config, activeShell = running::shell) {
+            error("must not create a second ADB connection")
+        }
+        assertTrue(result[0].ok)
+        assertFalse(result[1].ok)
+        assertTrue(result[1].detail.startsWith("尚未确认"))
+        assertFalse(running.closed)
+    }
+
     @Test fun failedPackageQueryLeavesAdbConnected() {
         val client = Client(ShellResult(1, stderr = "permission denied"))
         val result = SelfTest.checkAdb(config) { client }

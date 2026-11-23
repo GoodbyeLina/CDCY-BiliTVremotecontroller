@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
@@ -29,6 +31,9 @@ import tvrc.core.bili.VideoTargets
 import tvrc.core.bili.UrlConnectionHttpText
 import tvrc.core.config.AppConfig
 import tvrc.core.http.HttpUrlConnectionFetcher
+import tvrc.core.http.MediaTransferEvent
+import tvrc.core.http.MediaPhase
+import tvrc.core.http.MediaFailure
 import tvrc.core.json.Json
 import tvrc.core.json.field
 import tvrc.core.json.longOrNull
@@ -96,6 +101,15 @@ object Ctl {
     var toast: String = ""
         private set
 
+    @Volatile
+    var mediaText: String = ""
+        private set
+
+    fun onMediaText(text: String) {
+        mediaText = text
+        refresh()
+    }
+
     /** 用户手动按过停止：监控抢播默认必须尊重它（R-08 规则）。 */
     @Volatile
     var userStopped: Boolean = false
@@ -136,13 +150,18 @@ object Ctl {
 
     fun onPlaying(title: String) {
         playingTitle = title
-        userStopped = false
+        mediaText = "等待电视请求媒体（画面状态未知）"
         refresh()
+    }
+
+    fun onExplicitPlay() {
+        userStopped = false
     }
 
     fun onUserStopped() {
         userStopped = true
         playingTitle = ""
+        mediaText = ""
         refresh()
     }
 
@@ -153,7 +172,7 @@ object Ctl {
 
     fun stateText(): String = when (val s = state) {
         is PlaybackState.Idle -> "空闲"
-        is PlaybackState.Starting -> "启动中（第 " + (s.attempt + 1) + " 次）"
+        is PlaybackState.Starting -> "启动中（第 " + s.attempt + " 次）"
         is PlaybackState.Playing -> "播放中"
         is PlaybackState.Switching -> "切台中"
         is PlaybackState.Error -> "错误：" + s.kind.userText
@@ -351,7 +370,25 @@ class PlaybackService : Service() {
 
     private lateinit var store: Store
     private var graph: AppGraph? = null
+    @Volatile
     private var transport: AdbTransport? = null
+    @Volatile
+    private var transportTarget: Pair<String, Int>? = null
+
+    /** 借用同一目标的串行传输层；不得因自检再建一个竞争 ADB 连接。 */
+    internal fun activeAdbShell(cfg: AppConfig): ((String, Long) -> tvrc.core.adb.ShellResult)? {
+        val current = transport ?: return null
+        if (transportTarget != (cfg.tvHost to cfg.tvPort)) return null
+        return { command, timeoutMs -> current.shell(command, timeoutMs) }
+    }
+    private val playbackRequests = PlaybackRequestGate()
+    private val playbackCommit = Any()
+    private var lastNetworkSignature: String? = null
+    @Volatile
+    private var probeRunning = false
+    private var tvProbeFailures = 0
+    private var tvProbeSamples = 0
+
     private var tv: TvController? = null
     private var handler: Handler? = null
     private val io = Executors.newFixedThreadPool(3)
@@ -426,16 +463,21 @@ class PlaybackService : Service() {
             )
             return
         }
-        Ctl.bg { startItem(item, reason) }
+        val ticket = playbackRequests.next()
+        if (reason == "manual") Ctl.onExplicitPlay()
+        Ctl.bg { startItem(item, reason, ticket) }
     }
 
     private fun playRoom(roomId: Long, reason: String) {
         val item = store.items().firstOrNull { it.kind == ItemKind.LIVE && it.roomId == roomId }
             ?: LibItem(id = "", kind = ItemKind.LIVE, title = "直播间 " + roomId, roomId = roomId)
-        Ctl.bg { startItem(item, reason) }
+        val ticket = playbackRequests.next()
+        if (reason == "manual") Ctl.onExplicitPlay()
+        Ctl.bg { startItem(item, reason, ticket) }
     }
 
-    private fun startItem(item: LibItem, reason: String) {
+    private fun startItem(item: LibItem, reason: String, ticket: Long) {
+        if (!playbackRequests.isCurrent(ticket)) return
         val startedAt = System.currentTimeMillis()
         store.trace(
             "播放", "请求", TraceStatus.INFO, reasonLabel(reason) + "播放请求已收到",
@@ -455,6 +497,7 @@ class PlaybackService : Service() {
         val session = try {
             buildSession(item, cfg)
         } catch (e: Exception) {
+            if (!playbackRequests.isCurrent(ticket)) return
             Ctl.say(e.message ?: "内容不可播放")
             store.log("error", "构建播放会话失败：" + (e.message ?: ""))
             store.trace(
@@ -479,6 +522,11 @@ class PlaybackService : Service() {
                 "\n电视：" + cfg.tvAddress + "，播放器：" + cfg.mpvActivity,
             System.currentTimeMillis() - startedAt
         )
+        synchronized(playbackCommit) {
+        if (!playbackRequests.isCurrent(ticket)) {
+            store.trace("播放", "取消过期请求", TraceStatus.INFO, "较早的准备结果已取消，不再拉起电视")
+            return
+        }
         Ctl.onPlaying(item.title)
         store.touchPlayed(item.id)
         store.trace(
@@ -488,6 +536,7 @@ class PlaybackService : Service() {
         )
         playSession(session)
         updateNotification(Ctl.stateText() + " · " + item.title)
+        }
     }
 
     /** 直播先查开播状态（R-02：未开播要给明确提示，不能拉起一个死流）。 */
@@ -598,6 +647,7 @@ class PlaybackService : Service() {
             keyStore = keyStore,
             defaultTimeoutMs = 25_000
         )
+        transportTarget = cfg.tvHost to cfg.tvPort
         transport = t
         val controller = AdbTvController(
             transport = t,
@@ -624,6 +674,11 @@ class PlaybackService : Service() {
             onState = { s ->
                 Ctl.onState(s)
                 tracePlaybackState(s)
+            },
+            onMediaEvent = { event -> traceMedia(event) },
+            onMessage = { code, text ->
+                store.trace("恢复", code, TraceStatus.WARNING, text)
+                Ctl.say(text)
             }
         )
     }
@@ -651,7 +706,7 @@ class PlaybackService : Service() {
                 "播放", "等待电视", TraceStatus.INFO,
                 "已发送唤醒和起播命令，等待回执",
                 "项目：" + state.session.target(state.index) +
-                    "\n尝试：" + (state.attempt + 1) + "/3" +
+                    "\n尝试：" + state.attempt + "/3" +
                     "\n模式：" + state.session.mode
             )
             is PlaybackState.Playing -> store.trace(
@@ -670,7 +725,7 @@ class PlaybackService : Service() {
             is PlaybackState.Error -> store.trace(
                 "播放", "电视回执", TraceStatus.ERROR, state.kind.userText,
                 "错误分类：" + state.kind +
-                    "\n自动恢复： " + if (state.kind.autoRecoverable) "允许" else "不允许" +
+                    "\n重试策略：由错误类型、次数上限与用户停止状态共同决定" +
                     "\n详情：" + state.detail.ifBlank { "电视或播放引擎没有返回更多信息" },
                 playbackElapsed()
             )
@@ -683,13 +738,63 @@ class PlaybackService : Service() {
     private fun liveApi(): BiliLiveApi = RealBiliLiveApi(UrlConnectionHttpText())
 
     private fun stopPlayback() {
+        val stopTicket = playbackRequests.next() // no main-thread wait on a slow ADB launch
+        Ctl.onUserStopped()
         Ctl.bg {
-            runCatching { graph?.stop() }
-            Ctl.onUserStopped()
-            store.log("play", "用户停止")
-            store.trace("播放", "停止", TraceStatus.INFO, "用户主动停止播放")
-            updateNotification("已停止")
+            synchronized(playbackCommit) {
+                // A subsequent explicit play supersedes this stop job.
+                if (!playbackRequests.isCurrent(stopTicket)) return@bg
+                runCatching { graph?.stop() }
+                store.log("play", "用户停止")
+                store.trace("播放", "停止", TraceStatus.INFO, "用户主动停止播放，不自动恢复")
+                updateNotification("已停止")
+            }
         }
+    }
+
+    private fun traceMedia(event: MediaTransferEvent) {
+        val d = MediaDiagnostics.describe(event)
+        store.trace("媒体链路", d.action, d.status, d.summary, d.details, event.elapsedMs)
+        // Late EOF from an old socket is diagnostic evidence only, not a reason to relaunch.
+        if (event.headOnly || Ctl.userStopped || Ctl.state is PlaybackState.Idle) return
+        val state = Ctl.state
+        val target = when (state) {
+            is PlaybackState.Playing -> state.session.target(state.index)
+            is PlaybackState.Starting -> state.session.target(state.index)
+            is PlaybackState.Switching -> state.session.target(state.toIndex)
+            else -> ""
+        }
+        val identity = runCatching {
+            val uri = java.net.URI(target)
+            val query = tvrc.core.http.HttpParsing.parseQuery(uri.rawQuery.orEmpty())
+            if (uri.path == "/video") query["bvid"] else query["room"]?.let { "room:$it" }
+        }.getOrNull()
+        if (identity != event.mediaIdentity) return
+        if (event.phase in listOf(MediaPhase.FAILURE, MediaPhase.RETRY, MediaPhase.FIRST_BYTE, MediaPhase.PROGRESS)) {
+            if (event.failure !in listOf(MediaFailure.CLIENT_WRITE, MediaFailure.SERVER_CLOSED)) {
+                Ctl.onMediaText(d.summary)
+            }
+        }
+    }
+
+    /** Passive connectivity observation; no speed-test traffic and no automatic player restart. */
+    private fun sampleNetwork() {
+        val signature = runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = cm.activeNetwork
+            val caps = network?.let { cm.getNetworkCapabilities(it) }
+            when {
+                caps == null -> "无可用默认网络"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "有线网络"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "移动网络（电视可能无法访问手机代理）"
+                else -> "其他网络"
+            } + "; 网络标识=" + (network?.toString() ?: "无")
+        }.getOrElse { "网络状态未知：" + it.javaClass.simpleName }
+        if (signature == lastNetworkSignature) return
+        lastNetworkSignature = signature
+        store.trace("网络", "连接变化", if (signature.startsWith("无")) TraceStatus.WARNING else TraceStatus.INFO,
+            signature, "被动采样，不是延迟或丢包检测；切换网络后若电视无法播放，请确认同一局域网并检查手机代理地址。不会自动重开视频。")
     }
 
     // ---- 周期任务：探针 + 节目单 + 开播监控 ----
@@ -698,7 +803,10 @@ class PlaybackService : Service() {
         val now = System.currentTimeMillis()
         if (now >= monitorNextAt) {
             monitorNextAt = now + 5_000L
-            Ctl.bg { probeTv() }
+            if (!probeRunning) {
+                probeRunning = true
+                Ctl.bg { try { sampleNetwork(); probeTv() } finally { probeRunning = false } }
+            }
         }
         if (now >= scheduleNextAt) {
             scheduleNextAt = now + 20_000L
@@ -727,6 +835,14 @@ class PlaybackService : Service() {
         val status = runCatching { controller.probe() }.getOrNull() ?: return false
         val ping = transport?.shell("echo TVRC_ADB_OK", 5_000)
         val connected = ping?.ok == true && ping.stdout.trim() == "TVRC_ADB_OK"
+        tvProbeSamples++
+        if (connected) tvProbeFailures = 0 else tvProbeFailures++
+        if (tvProbeSamples % 6 == 0 || !connected) {
+            store.trace("电视", "连接采样", if (connected) TraceStatus.INFO else TraceStatus.WARNING,
+                if (connected) "ADB 可达，媒体画面仍需电视确认" else "本次 ADB 探测失败（不代表视频已中断）",
+                "连续失败：$tvProbeFailures；进程存活：${status.alive}；系统播放状态：${status.playing}\n" +
+                    "单次超时不重启播放器；持续失败请检查电视电源、同一局域网、IP、调试授权。")
+        }
         Ctl.onStatusChanged(Ctl.proxyPort, connected, status.playing)
         if (connected != lastTvConnected || status.playing != lastTvPlaying) {
             store.trace(
@@ -794,6 +910,7 @@ class PlaybackService : Service() {
     }
 
     private fun pollMonitors() {
+        val observedGeneration = playbackRequests.snapshot()
         if (!store.monitorEnabled) return
         val list = store.monitors().filter { it.enabled }
         if (list.isEmpty()) {
@@ -824,7 +941,7 @@ class PlaybackService : Service() {
             if (info.live) {
                 store.log("monitor", "开播：" + updated.title + "（房间 " + m.roomId + "）")
                 notifyLive(updated)
-                maybeGrab(updated)
+                maybeGrab(updated, observedGeneration)
             } else {
                 store.log("monitor", "下播：" + updated.title)
                 cancelLiveNotification(m.roomId)
@@ -835,15 +952,18 @@ class PlaybackService : Service() {
     }
 
     /** 抢播规则（R-08）：priority>0 才打断；用户手动停止时必须显式允许覆盖。 */
-    private fun maybeGrab(m: MonitorItem) {
+    private fun maybeGrab(m: MonitorItem, observedGeneration: Long) {
         if (m.priority <= 0) return
         if (Ctl.userStopped && !m.allowOverride) {
             store.log("monitor", "跳过抢播：" + m.title + "（用户手动停止且未允许覆盖）")
             return
         }
         store.log("monitor", "抢播：" + m.title)
-        if (m.autoWake) runCatching { tv?.wake() }
-        playRoom(m.roomId, "monitor")
+        // A lookup begun before a newer play/stop cannot supersede that command.
+        val ticket = playbackRequests.nextIfCurrent(observedGeneration) ?: return
+        val item = store.items().firstOrNull { it.kind == ItemKind.LIVE && it.roomId == m.roomId }
+            ?: LibItem(id = "", kind = ItemKind.LIVE, title = m.title, roomId = m.roomId)
+        Ctl.bg { startItem(item, "monitor", ticket) }
     }
 
     // ---- 通知 ----

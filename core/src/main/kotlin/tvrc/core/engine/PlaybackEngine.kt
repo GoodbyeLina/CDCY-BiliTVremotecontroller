@@ -30,6 +30,8 @@ class PlaybackEngine(
     private val lock = Any()
     private var state: PlaybackState = PlaybackState.Idle(clock.nowMs(), IdleReason.NEVER_STARTED)
     private var idleTimer: Cancellable? = null
+    private var revision = 0L
+    private var timerGeneration = 0L
 
     val currentState: PlaybackState
         get() = synchronized(lock) { state }
@@ -46,40 +48,53 @@ class PlaybackEngine(
         synchronized(lock) {
             val transition = PlaybackReducer.reduce(state, event)
             state = transition.state
-            dispatch(transition.effects)
+            revision++
+            dispatch(transition.effects, revision)
         }
     }
 
-    private fun dispatch(effects: List<Effect>) {
+    private fun dispatch(effects: List<Effect>, expectedRevision: Long) {
         for (effect in effects) {
+            // 回调可能重入 stop/start；旧迁移剩余副作用不得覆盖用户的新决定。
+            if (revision != expectedRevision) return
             when (effect) {
                 Effect.WakeTv -> {
                     val ack = tv.wake()
                     // 唤醒失败直接当作启动失败；成功则等待 Launch 的回执，避免重复 ack
-                    if (!ack.ok) send(Event.TvAck(clock.nowMs(), false, ack.detail))
+                    if (revision == expectedRevision && !ack.ok) send(Event.TvAck(clock.nowMs(), false, ack.detail))
                 }
                 is Effect.Launch -> {
                     val ack = tv.launch(effect.target)
-                    send(Event.TvAck(clock.nowMs(), ack.ok, ack.detail))
+                    if (revision == expectedRevision) send(Event.TvAck(clock.nowMs(), ack.ok, ack.detail))
                 }
                 Effect.StopTv -> tv.stop()
-                is Effect.ProbeTv -> scheduler.postDelayed(effect.afterMs) {
-                    val status = tv.probe()
-                    send(Event.TvReport(clock.nowMs(), status.alive, status.playing))
+                is Effect.ProbeTv -> postGuarded(effect.afterMs) {
+                    val beforeProbe = revision
+                    try {
+                        val status = tv.probe()
+                        if (revision == beforeProbe) send(Event.TvReport(clock.nowMs(), status.alive, status.playing))
+                    } catch (e: Exception) {
+                        // 探针异常只有“未知”含义，不能据此换台或丢失后续探测链。
+                        if (revision == beforeProbe) {
+                            logger("[warn] 电视状态暂时未知：${e.message}")
+                            dispatch(listOf(Effect.ProbeTv(probeIntervalMs)), beforeProbe)
+                        }
+                    }
                 }
-                is Effect.ScheduleSwitch -> scheduler.postDelayed(effect.afterMs) {
+                is Effect.ScheduleSwitch -> postGuarded(effect.afterMs) {
                     send(Event.Tick(clock.nowMs()))
                 }
-                is Effect.ScheduleRetry -> scheduler.postDelayed(effect.afterMs) {
+                is Effect.ScheduleRetry -> postGuarded(effect.afterMs) {
                     send(Event.RetryDue(clock.nowMs()))
                 }
                 Effect.CancelTimers -> {
+                    timerGeneration++
                     scheduler.cancelAll()
                     cancelIdleTimer()
                 }
                 is Effect.Notify -> {
                     onState(effect.state)
-                    updateIdleTimer(effect.state)
+                    if (revision == expectedRevision) updateIdleTimer(effect.state)
                 }
                 is Effect.UserMessage -> onMessage(effect.code, effect.text)
                 is Effect.Log -> logger("[${effect.level}] ${effect.message}")
@@ -87,10 +102,21 @@ class PlaybackEngine(
         }
     }
 
+    private fun postGuarded(delayMs: Long, task: () -> Unit): Cancellable {
+        val generation = timerGeneration
+        return scheduler.postDelayed(delayMs) {
+            synchronized(lock) {
+                if (generation == timerGeneration) task()
+            }
+        }
+    }
+
     private fun updateIdleTimer(newState: PlaybackState) {
         cancelIdleTimer()
         if (idleTimeoutMs > 0 && newState is PlaybackState.Idle) {
-            idleTimer = scheduler.postDelayed(idleTimeoutMs) { onIdleShutdown() }
+            idleTimer = postGuarded(idleTimeoutMs) {
+                if (state is PlaybackState.Idle) onIdleShutdown()
+            }
         }
     }
 

@@ -103,17 +103,35 @@ class AppGraphTest {
     }
 
     @Test
-    fun watchdogRestartsWithPriorState() {
+    fun newlyImportedLiveRoomIsAuthorizedBeforeLaunch() {
+        val g = newGraph(config = cfg(rooms = emptyList()))
+        val port = g.start()
+        try {
+            val target = "http://127.0.0.1:$port/live?room=3475080"
+            g.engine.start(tvrc.core.Session(rooms = listOf(target), mode = tvrc.core.Mode.SINGLE))
+            assertEquals(200, http(port, "/live?room=3475080").first)
+            assertEquals(400, http(port, "/live?room=999").first)
+            assertTrue(http(port, "/status").second.contains("3475080"))
+        } finally {
+            g.close()
+        }
+    }
+
+    @Test
+    fun watchdogDoesNotRestartWithoutReliablePlaybackProgress() {
         val clock = VirtualClock(1000L)
         val sched = VirtualScheduler(clock)
         val g = newGraph(clock = clock, sched = sched)
         g.start()
         try {
             assertEquals(0, g.watchdogRestartCount)
-            clock.now += 40_000L
-            g.checkWatchdog()
-            assertEquals(1, g.watchdogRestartCount)
-            assertTrue(g.engine.currentState is PlaybackState.Starting || g.engine.currentState is PlaybackState.Playing)
+            val stateBefore = g.engine.currentState
+            repeat(10) {
+                clock.now += 40_000L
+                g.checkWatchdog()
+            }
+            assertEquals(0, g.watchdogRestartCount)
+            assertEquals(stateBefore, g.engine.currentState, "No position samples does not mean stalled playback")
         } finally {
             g.close()
         }

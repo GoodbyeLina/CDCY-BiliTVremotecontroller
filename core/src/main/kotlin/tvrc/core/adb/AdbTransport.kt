@@ -140,27 +140,6 @@ class AdbTransport(
         return grep.ok && grep.stdout.lineSequence().any { it.contains(pkg) && !it.contains("grep") }
     }
 
-    /**
-     * 换台后 mpv 可能停在暂停态（F-03）：读状态→补 keyevent 85，最多 [attempts] 次。
-     * 返回实际补发次数。sleeper 可注入，测试里不真睡 1.5 秒。
-     */
-    fun replenishPlayState(
-        pkg: String,
-        attempts: Int = 3,
-        sleeper: (Long) -> Unit = { Thread.sleep(it) }
-    ): Int {
-        var sent = 0
-        var i = 0
-        while (i < attempts) {
-            if (!isAlive(pkg)) return sent
-            keyEvent(85)
-            sent++
-            i++
-            if (i < attempts) sleeper(1_500L)
-        }
-        return sent
-    }
-
     override fun close() {
         runCatching { client?.close() }
         client = null

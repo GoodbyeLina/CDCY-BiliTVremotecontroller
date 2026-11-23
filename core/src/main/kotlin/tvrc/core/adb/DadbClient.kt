@@ -72,9 +72,15 @@ class DadbClient(
             val packet = try {
                 AdbPacket.read(input!!)
             } catch (e: SocketTimeoutException) {
-                throw AdbTimeoutException(if (tokenRounds >= 2)
-                    "等待电视确认 ADB 授权超时，请在电视弹窗中选择允许后重试"
-                else "ADB 握手超时：$host:$port")
+                val stage = when (tokenRounds) {
+                    0 -> "等待设备首包（未收到 CNXN/AUTH）"
+                    1 -> "已发送 AUTH 签名，等待设备响应"
+                    else -> "已发送公钥，等待电视授权确认；请在电视弹窗中选择允许后重试"
+                }
+                val timeout = if (tokenRounds >= 2) authorizationTimeoutMs else connectTimeoutMs
+                throw AdbTimeoutException("ADB 握手超时：$host:$port；$stage（${timeout}ms）").apply {
+                    initCause(e)
+                }
             }
             when (packet.command) {
                 AdbPacket.A_CNXN -> return true

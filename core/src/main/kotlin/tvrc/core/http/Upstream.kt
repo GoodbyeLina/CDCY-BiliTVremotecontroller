@@ -85,15 +85,25 @@ class HttpUrlConnectionFetcher(
             conn.sslSocketFactory = trustAllContext().socketFactory
         }
 
-        val status = conn.responseCode
-        val stream: InputStream = if (status >= 400) (conn.errorStream ?: ByteArrayInputStream(ByteArray(0)))
-        else conn.inputStream
-        val headers = LinkedHashMap<String, String>()
-        for ((name, values) in conn.headerFields) {
-            if (name == null || values.isEmpty()) continue
-            headers[name.lowercase()] = values.first()
+        try {
+            val status = conn.responseCode
+            val stream: InputStream = if (status >= 400) (conn.errorStream ?: ByteArrayInputStream(ByteArray(0)))
+            else conn.inputStream
+            val ownedStream = object : java.io.FilterInputStream(stream) {
+                override fun close() {
+                    try { super.close() } finally { conn.disconnect() }
+                }
+            }
+            val headers = LinkedHashMap<String, String>()
+            for ((name, values) in conn.headerFields) {
+                if (name == null || values.isEmpty()) continue
+                headers[name.lowercase()] = values.first()
+            }
+            return UpstreamResponse(status, headers, ownedStream, conn.contentLengthLong)
+        } catch (e: Exception) {
+            conn.disconnect()
+            throw e
         }
-        return UpstreamResponse(status, headers, stream, conn.contentLengthLong)
     }
 
     private fun trustAllContext(): SSLContext {

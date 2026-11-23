@@ -12,8 +12,8 @@ android {
         applicationId = "tvrc.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "3.0.0-alpha.4"
+        versionCode = 8
+        versionName = "3.0.0-alpha.6"
     }
 
     compileOptions {

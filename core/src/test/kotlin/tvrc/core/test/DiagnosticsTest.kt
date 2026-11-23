@@ -47,8 +47,15 @@ class DiagnosticsTest {
     }
 
     @Test
+    fun watchdogWithoutReliableMediaProgressNeverRestarts() {
+        val input = WatchdogInput(nowMs = 10_000_000, lastProgressMs = 0,
+            playing = true, restartCount = 0, lastRestartMs = 0)
+        assertEquals(WatchdogDecision.Nothing, Watchdog.decide(input))
+    }
+
+    @Test
     fun watchdogRestartsOnStall() {
-        val d = Watchdog.decide(WatchdogInput(nowMs = 61_000, lastProgressMs = 0, playing = true, restartCount = 0, lastRestartMs = 0))
+        val d = Watchdog.decide(WatchdogInput(nowMs = 61_000, lastProgressMs = 0, playing = true, progressReliable = true, restartCount = 0, lastRestartMs = 0))
         assertTrue(d is WatchdogDecision.Restart, d.toString())
         assertEquals(1, (d as WatchdogDecision.Restart).attempt)
         assertEquals(61_000, d.stalledForMs)
@@ -57,7 +64,7 @@ class DiagnosticsTest {
     @Test
     fun watchdogRespectsCooldown() {
         val d = Watchdog.decide(
-            WatchdogInput(nowMs = 100_000, lastProgressMs = 10_000, playing = true, restartCount = 1, lastRestartMs = 70_000)
+            WatchdogInput(nowMs = 100_000, lastProgressMs = 10_000, playing = true, progressReliable = true, restartCount = 1, lastRestartMs = 70_000)
         )
         assertEquals(WatchdogDecision.Nothing, d, "距上次重启 30s < 60s 冷却，不许再重启")
     }
@@ -65,7 +72,7 @@ class DiagnosticsTest {
     @Test
     fun watchdogGivesUpAfterThreeRestarts() {
         val d = Watchdog.decide(
-            WatchdogInput(nowMs = 500_000, lastProgressMs = 400_000, playing = true, restartCount = 3, lastRestartMs = 0)
+            WatchdogInput(nowMs = 500_000, lastProgressMs = 400_000, playing = true, progressReliable = true, restartCount = 3, lastRestartMs = 0)
         )
         assertTrue(d is WatchdogDecision.GiveUp, d.toString())
         assertTrue((d as WatchdogDecision.GiveUp).reason.contains("3"))

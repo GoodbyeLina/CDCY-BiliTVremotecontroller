@@ -11,8 +11,7 @@ import tvrc.core.media.MediaSessionTextSource
  *
  * - wake   → input keyevent 224（KEYCODE_WAKEUP，点亮电视自己的屏）
  * - launch → am start -a android.intent.action.VIEW -d <url> -n <pkg>/<activity>，
- *            成功后补 [AdbTransport.replenishPlayState]（keyevent 85 最多 3 次，F-03：
- *            mpv 换台后可能停在暂停态，画面定住没声音极易被误判成播放失败）
+ *            由播放器处理自动起播；不发送全局媒体键，避免暂停 mpv 或唤醒其他音乐应用
  * - stop   → am force-stop <pkg>
  * - probe  → 进程存活 pidof → ps -A → ps | grep 三级回退（F-04），
  *            是否真的在播由 [MediaSessionTextSource]（dumpsys media_session）判定（P1-2 已接入）
@@ -21,8 +20,6 @@ class AdbTvController(
     private val transport: AdbTransport,
     private val mpvPackage: String = "is.xyz.mpv",
     private val mpvComponent: String = "is.xyz.mpv/.MPVActivity",
-    private val replenishAttempts: Int = 3,
-    private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
     /**
      * 取 dumpsys 文本的来源。为 null 时 playing 恒 false（老测试的零依赖用法）。
      * 生产由 AdbMediaSessionSource(transport) 注入。
@@ -35,8 +32,7 @@ class AdbTvController(
     override fun launch(target: String): Ack {
         val started = transport.startVideo(target, mpvComponent)
         if (!started.ok) return started.toAck()
-        val resumed = transport.replenishPlayState(mpvPackage, replenishAttempts, sleeper)
-        return Ack(true, "started; keyevent85 x$resumed")
+        return Ack(true, "started; no global media keys")
     }
 
     override fun stop(): Ack = transport.stopApp(mpvPackage).toAck()

@@ -5,7 +5,7 @@ package tvrc.core
  */
 object TvrcVersion {
     /** 应用版本（三代原生 App）。 */
-    const val APP = "3.0.0-alpha.4"
+    const val APP = "3.0.0-alpha.6"
 
     /** 配置 schema 版本，与 AppConfig.schemaVersion 一致；升版本必须带迁移。 */
     const val CONFIG_SCHEMA = 1

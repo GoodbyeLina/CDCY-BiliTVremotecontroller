@@ -147,6 +147,91 @@ class PlaybackEngineTest {
         assertTrue(after is PlaybackState.Playing, "冷却后重试应恢复播放，实际 $after；cmd=${f.tv.commands}；msg=${f.messages}")
     }
 
+    @Test
+    fun wakeFailureDoesNotLaunchAndRetriesAreBounded() {
+        val f = Fixture()
+        f.tv.wakeOk = false
+        f.engine.start(session())
+        assertTrue(f.engine.currentState is PlaybackState.Starting)
+        assertEquals(listOf("wake"), f.tv.commands)
+        f.scheduler.advanceBy(6_000)
+        assertTrue(f.engine.currentState is PlaybackState.Error)
+        assertEquals(3, f.tv.commands.count { it == "wake" })
+        assertEquals(0, f.tv.commands.count { it.startsWith("launch:") })
+        f.scheduler.advanceBy(1_000_000)
+        assertEquals(3, f.tv.commands.count { it == "wake" })
+    }
+
+    @Test
+    fun stopInsideStartingNotificationPreventsRemainingLaunch() {
+        val clock = VirtualClock(0)
+        val scheduler = VirtualScheduler(clock)
+        val tv = FakeTv()
+        lateinit var engine: PlaybackEngine
+        engine = PlaybackEngine(tv, scheduler, clock, onState = {
+            if (it is PlaybackState.Starting) engine.stop()
+        })
+        engine.start(session())
+        assertTrue(engine.currentState is PlaybackState.Idle)
+        assertEquals(listOf("wake", "stop"), tv.commands)
+        scheduler.advanceBy(1_000_000)
+        assertEquals(listOf("wake", "stop"), tv.commands)
+    }
+
+    @Test
+    fun staleTimerAlreadyDequeuedCannotAffectNewSession() {
+        val clock = VirtualClock(0)
+        val callbacks = mutableListOf<() -> Unit>()
+        val scheduler = object : tvrc.core.engine.Scheduler {
+            override fun postDelayed(delayMs: Long, action: () -> Unit): tvrc.core.engine.Cancellable {
+                callbacks += action
+                return object : tvrc.core.engine.Cancellable { override fun cancel() {} }
+            }
+            override fun cancelAll() {} // 已出队的任务不能依赖 cancelAll 撤销。
+        }
+        val tv = FakeTv()
+        val engine = PlaybackEngine(tv, scheduler, clock)
+        engine.start(session())
+        val stale = callbacks.toList()
+        engine.stop()
+        engine.start(session())
+        val before = tv.commands.toList()
+        clock.now += 100_000
+        stale.forEach { it() }
+        assertEquals(before, tv.commands)
+        assertEquals(0, (engine.currentState as PlaybackState.Playing).index)
+    }
+
+    @Test
+    fun probeExceptionIsUnknownAndProbeChainContinues() {
+        val clock = VirtualClock(0)
+        val scheduler = VirtualScheduler(clock)
+        val fake = FakeTv()
+        var probes = 0
+        val tv = object : tvrc.core.TvController by fake {
+            override fun probe(): TvStatus {
+                probes++
+                if (probes == 1) error("temporary probe timeout")
+                return TvStatus(alive = true, playing = false)
+            }
+        }
+        val engine = PlaybackEngine(tv, scheduler, clock)
+        engine.start(session())
+        scheduler.advanceBy(15_000)
+        assertEquals(3, probes)
+        assertTrue(engine.currentState is PlaybackState.Playing)
+        assertEquals(0, (engine.currentState as PlaybackState.Playing).missCount)
+        assertEquals(listOf("wake", "launch:a"), fake.commands)
+    }
+
+    @Test
+    fun scheduledSwitchDoesNotDuplicateProbeChains() {
+        val f = Fixture()
+        f.engine.start(session())
+        f.scheduler.advanceBy(120_000)
+        assertEquals(2, f.scheduler.pendingCount(), "始终只有一个换台和一个探测任务")
+    }
+
     /** 8. 换台时起播失败 → Error(PLAY_FAILED) 并给出用户提示。 */
     @Test
     fun switchingFailureEntersPlayFailedError() {

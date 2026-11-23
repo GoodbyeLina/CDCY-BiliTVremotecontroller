@@ -73,6 +73,8 @@ core/src/main/kotlin/tvrc/core/
 
 ## 4. 契约冻结（P4-3，core API v1）
 
+2026-11-23：APP 版本标记统一为 `3.0.0-alpha.6`（versionCode 8）。新增媒体传输观察回调、安全有限请求重试及恢复边界；三项冻结接口与配置 schema 均未变更，CORE_API / CONFIG_SCHEMA 保持 1。此文前部为历史基线，当前进展以 README 与 docs/dev/2026-11-23-stability.md 为准。
+
 | 接口 | 位置 | 实现方必须遵守 |
 |---|---|---|
 | `TvController` | `core/.../TvController.kt:13` | 不抛异常（用 `Ack.ok=false`）；单次调用 ≤10s；`probe()` 必须区分 alive 与 playing；`launch(target)` 收完整 intent 目标；顺序必须是 connect→wake |

@@ -318,6 +318,47 @@ class PlaybackReducerTest {
         assertTrue(h2.commands.contains("stop"))
     }
 
+    @Test
+    fun unknownMediaStateAndSingleMissDoNotSwitch() {
+        val h = Harness(PlaybackState.Playing(liveSession(), 0, 0, 1_800_000))
+        h.send(Event.TvReport(100, alive = false, playing = false))
+        assertTrue(h.effects.none { it is Effect.Launch })
+        repeat(20) { h.send(Event.TvReport(200L + it, alive = true, playing = false)) }
+        assertTrue(h.state is PlaybackState.Playing)
+        assertEquals(0, (h.state as PlaybackState.Playing).missCount)
+        assertTrue(h.commands.isEmpty())
+    }
+
+    @Test
+    fun videoLostNeverSilentlyRestartsOrAutoRetries() {
+        val video = Session(videos = listOf("v1", "v2"), mode = Mode.VIDEO)
+        val h = Harness(PlaybackState.Playing(video, 1, 0, 1_800_000))
+        repeat(3) { h.send(Event.TvReport(it * 5_000L, alive = false, playing = false)) }
+        assertTrue(h.state is PlaybackState.Error)
+        assertTrue(h.effects.any { it is Effect.UserMessage && it.text.contains("进度") })
+        h.send(Event.RetryDue(1_000_000))
+        assertTrue(h.state is PlaybackState.Error)
+        assertTrue(h.commands.isEmpty())
+    }
+
+    @Test
+    fun liveRecoveryHasCooldownAndCumulativeLimit() {
+        val h = Harness(PlaybackState.Playing(liveSession(), 0, 0, 1_800_000))
+        repeat(MAX_AUTO_RETRIES) { attempt ->
+            val now = attempt * 100_000L
+            repeat(3) { h.send(Event.TvReport(now + it, alive = false, playing = false)) }
+            val switching = h.state as PlaybackState.Switching
+            assertEquals(attempt + 1, switching.recoveryCount)
+            h.send(Event.TvAck(now + 3, true))
+            repeat(3) { h.send(Event.TvReport(now + 4 + it, alive = false, playing = false)) }
+            if (attempt < MAX_AUTO_RETRIES - 1) assertTrue(h.state is PlaybackState.Playing)
+        }
+        assertTrue(h.state is PlaybackState.Error)
+        val count = h.commands.size
+        h.send(Event.RetryDue(10_000_000))
+        assertEquals(count, h.commands.size)
+    }
+
     // 18 —— 验证替身本身可靠
     @Test
     fun fakeTv_recordsCommands_andHonoursScriptedFailures() {

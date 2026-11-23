@@ -103,6 +103,7 @@ object PlaybackReducer {
                 Transition(
                     err,
                     listOf(
+                        Effect.CancelTimers,
                         Effect.StopTv,
                         Effect.UserMessage("TV_UNREACHABLE", ErrorKind.TV_UNREACHABLE.userText),
                         Effect.Notify(err),
@@ -122,6 +123,7 @@ object PlaybackReducer {
                 Transition(
                     err,
                     listOf(
+                        Effect.CancelTimers,
                         Effect.StopTv,
                         Effect.UserMessage("TV_UNREACHABLE", ErrorKind.TV_UNREACHABLE.userText),
                         Effect.Notify(err),
@@ -154,7 +156,7 @@ object PlaybackReducer {
                 )
                 Transition(
                     switching,
-                    listOf(launchOf(state.session, to), Effect.Log("info", "到点换台 ${state.index} -> $to"))
+                    listOf(Effect.CancelTimers, launchOf(state.session, to), Effect.Log("info", "到点换台 ${state.index} -> $to"))
                 )
             } else {
                 stay(state)
@@ -167,17 +169,32 @@ object PlaybackReducer {
             } else {
                 val miss = state.missCount + 1
                 if (miss >= MAX_MISSES) {
-                    val to = state.session.nextIndex(state.index)
-                    val switching = Switching(
-                        state.session, state.index, to, SwitchReason.TV_LOST, event.nowMs, state.recoveryCount
-                    )
-                    Transition(
-                        switching,
-                        listOf(
-                            launchOf(state.session, to),
-                            Effect.Log("warn", "电视连续 ${MAX_MISSES} 次探测失败，换到第 $to 项")
-                        )
-                    )
+                    when {
+                        state.session.mode == Mode.VIDEO || state.recoveryCount >= MAX_AUTO_RETRIES -> {
+                            val text = if (state.session.mode == Mode.VIDEO)
+                                "电视连续探测离线；为避免丢失点播进度，已停止自动恢复。请检查电视和 WiFi，确认播放位置后手动重试。"
+                            else "电视多次恢复后仍离线，已停止自动恢复。请检查电视电源和 WiFi 后手动重试。"
+                            val err = Error(ErrorKind.TV_UNREACHABLE, state.session, event.nowMs,
+                                MAX_AUTO_RETRIES, event.nowMs + RETRY_COOLDOWN_MS, text)
+                            Transition(err, listOf(Effect.CancelTimers, Effect.UserMessage("TV_UNREACHABLE", text), Effect.Notify(err)))
+                        }
+                        state.recoveryCount > 0 && event.nowMs - state.startedAtMs < RETRY_COOLDOWN_MS ->
+                            Transition(state.copy(missCount = miss), listOf(Effect.ProbeTv(PROBE_INTERVAL_MS)))
+                        else -> {
+                            val to = state.session.nextIndex(state.index)
+                            val switching = Switching(
+                                state.session, state.index, to, SwitchReason.TV_LOST, event.nowMs, state.recoveryCount + 1
+                            )
+                            Transition(
+                                switching,
+                                listOf(
+                                    Effect.CancelTimers,
+                                    launchOf(state.session, to),
+                                    Effect.Log("warn", "电视连续 ${MAX_MISSES} 次探测失败，恢复第 ${switching.recoveryCount}/$MAX_AUTO_RETRIES 次，换到第 $to 项")
+                                )
+                            )
+                        }
+                    }
                 } else {
                     Transition(state.copy(missCount = miss), listOf(Effect.ProbeTv(PROBE_INTERVAL_MS)))
                 }
@@ -214,6 +231,7 @@ object PlaybackReducer {
                 Transition(
                     err,
                     listOf(
+                        Effect.CancelTimers,
                         Effect.StopTv,
                         Effect.UserMessage("PLAY_FAILED", ErrorKind.PLAY_FAILED.userText),
                         Effect.Notify(err),
@@ -245,7 +263,7 @@ object PlaybackReducer {
 
         is Event.RetryDue -> {
             val session = state.session
-            val canAutoRecover = state.kind.autoRecoverable &&
+            val canAutoRecover = state.kind.autoRecoverable && session?.mode != Mode.VIDEO &&
                 state.recoveryCount < MAX_AUTO_RETRIES &&
                 event.nowMs >= state.canRetryAtMs
             if (canAutoRecover && session != null) {
@@ -270,7 +288,7 @@ object PlaybackReducer {
             }
         }
 
-        is Event.UserStop -> Transition(Idle(event.nowMs, IdleReason.USER_STOP), listOf(Effect.CancelTimers))
+        is Event.UserStop -> stopTo(event.nowMs)
         is Event.UserStart -> restart(event.nowMs, event.session)
         else -> stay(state)
     }

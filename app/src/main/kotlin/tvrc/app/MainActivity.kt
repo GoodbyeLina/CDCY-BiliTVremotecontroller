@@ -56,6 +56,7 @@ class MainActivity : Activity() {
     private var filter = "全部"
     private var searchQuery = ""
     private var draft = ""
+    private var importField: EditText? = null
     private var searchField: EditText? = null
     private var importing = false
     private var importMessage = ""
@@ -63,9 +64,9 @@ class MainActivity : Activity() {
     private var selfTesting = false
     private var deviceDraft = Bundle()
 
-    // 状态探针不能重建正在输入的设备表单，否则焦点、键盘和未保存的内容都会丢失。
+    // 状态探针不能重建正在编辑的表单，否则焦点、键盘和系统粘贴目标都会丢失。
     private val refreshCb: () -> Unit = { runOnUiThread {
-        if (tab == 3) updateStatus() else render()
+        if (tab == 3 || (tab == 0 && importField?.hasFocus() == true)) updateStatus() else render()
     } }
     private val tabs = listOf("内容库", "节目单", "监控", "设备")
     private val filters = listOf("全部", "视频", "合集", "直播", "收藏")
@@ -196,6 +197,7 @@ class MainActivity : Activity() {
             if (Ctl.playingTitle.isNotBlank()) append(" · ").append(Ctl.playingTitle)
             append("\n代理 ").append(if (Ctl.proxyPort > 0) ":" + Ctl.proxyPort else "未启动")
             append("　电视 ").append(if (Ctl.tvAlive) "在线" else "离线")
+            if (Ctl.mediaText.isNotBlank()) append("\n").append(Ctl.mediaText)
         }
         statusText.text = line
     }
@@ -359,7 +361,16 @@ class MainActivity : Activity() {
             minLines = 1
             maxLines = 3
             setText(draft)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    // 清空也是有效草稿；不能等点击导入才同步，否则刷新会恢复上次的链接。
+                    draft = s?.toString().orEmpty()
+                }
+            })
         }
+        importField = input
         c.addView(input)
         c.addView(vpad(8))
         val r = row()
@@ -906,7 +917,7 @@ class MainActivity : Activity() {
         render()
         val cfg = store.config()
         Ctl.bg {
-            val results = SelfTest.run(cfg, store)
+            val results = SelfTest.run(cfg, store, Ctl.service?.activeAdbShell(cfg))
             runOnUiThread {
                 selfTesting = false
                 selfTest = results
@@ -1017,6 +1028,8 @@ class MainActivity : Activity() {
         sb.append("本机 IP：").append(LanAddress.localIpv4()).append("\n")
         sb.append("代理端口：").append(Ctl.proxyPort).append("\n")
         sb.append("状态：").append(Ctl.stateText()).append("\n")
+        sb.append("媒体传输：").append(Ctl.mediaText.ifBlank { "未知" }).append("\n")
+        sb.append("说明：接收/发送字节不等于电视已显示画面；首帧、缓冲、解码状态未知。\n")
         sb.append("电视：").append(store.config().tvAddress)
             .append(" / ").append(if (Ctl.tvAlive) "在线" else "离线")
             .append(" / ").append(if (Ctl.tvPlaying) "确认在播" else "未确认在播").append("\n")

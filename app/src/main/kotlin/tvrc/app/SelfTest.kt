@@ -3,6 +3,7 @@ package tvrc.app
 import tvrc.core.adb.AdbKeyStore
 import tvrc.core.adb.AdbClient
 import tvrc.core.adb.DadbClient
+import tvrc.core.adb.ShellResult
 import tvrc.core.bili.RealBiliLiveApi
 import tvrc.core.bili.UrlConnectionHttpText
 import tvrc.core.config.AppConfig
@@ -22,7 +23,7 @@ object SelfTest {
 
     data class Item(val name: String, val required: Boolean, val ok: Boolean, val detail: String)
 
-    fun run(cfg: AppConfig, store: Store): List<Item> {
+    fun run(cfg: AppConfig, store: Store, activeShell: ((String, Long) -> ShellResult)? = null): List<Item> {
         val results = mutableListOf<Item>()
 
         // 1. 外网（B站接口）
@@ -59,9 +60,9 @@ object SelfTest {
             results += Item("电视 ADB", true, false, "电视地址为空：填电视 IP（电视设置里看）")
         } else {
             val keyStore = AdbKeyStore(store.keyDir, "adbkey")
-            val adbResults = checkAdb(cfg) { DadbClient(cfg.tvHost, cfg.tvPort, keyStore) }
+            val adbResults = checkAdb(cfg, activeShell) { DadbClient(cfg.tvHost, cfg.tvPort, keyStore) }
             results += adbResults
-            Ctl.onStatusChanged(Ctl.proxyPort, adbResults.first().ok, Ctl.tvPlaying && adbResults.first().ok)
+            // 自检结果不覆写运行服务的连接/播放状态：独立握手失败不能证明已有连接离线。
             adbResults.forEach { store.log("self-test", it.name + ": " + it.detail) }
         }
 
@@ -74,28 +75,43 @@ object SelfTest {
         return results
     }
 
-    /** 连通性、授权、安装状态分别检查，不以播放器进程或名为 android 的进程判断 ADB。 */
-    internal fun checkAdb(cfg: AppConfig, clientFactory: () -> AdbClient): List<Item> {
+    /**
+     * activeShell 必须来自与 cfg 同一目标的运行传输层，并由传输层串行化命令。
+     * 借用时只执行真实 echo/包查询，不连接或关闭它；没有运行连接时才拥有独立 client。
+     * 连通性、授权、安装状态分别检查，不以播放器进程或缓存在线状态判断 ADB。
+     */
+    internal fun checkAdb(
+        cfg: AppConfig,
+        activeShell: ((String, Long) -> ShellResult)? = null,
+        clientFactory: () -> AdbClient
+    ): List<Item> {
         var connected = false
         var failure = ""
         var packages: Set<String>? = null
         var packageFailure = ""
+        fun inspect(shell: (String, Long) -> ShellResult) {
+            val probe = shell("echo TVRC_ADB_OK", 8_000)
+            if (!probe.ok || probe.stdout.trim() != "TVRC_ADB_OK") {
+                throw IOException("ADB shell 未返回验证结果：" + probe.stderr.ifBlank { probe.stdout })
+            }
+            connected = true
+            try {
+                val list = shell("pm list packages", 10_000)
+                val names = list.stdout.lineSequence().map { it.trim() }
+                    .filter { it.startsWith("package:") }.map { it.removePrefix("package:") }.toSet()
+                if (list.ok && names.isNotEmpty()) packages = names
+                else packageFailure = "应用列表查询失败：" + list.stderr.ifBlank { list.stdout }
+            } catch (e: Exception) {
+                packageFailure = e.message ?: e.javaClass.simpleName
+            }
+        }
         try {
-            clientFactory().use { client ->
-                if (!client.connect()) throw IOException("电视拒绝了 ADB 认证，请在电视上允许调试")
-                val probe = client.shell("echo TVRC_ADB_OK", 8_000)
-                if (!probe.ok || probe.stdout.trim() != "TVRC_ADB_OK") {
-                    throw IOException("ADB shell 未返回验证结果：" + probe.stderr.ifBlank { probe.stdout })
-                }
-                connected = true
-                try {
-                    val list = client.shell("pm list packages", 10_000)
-                    val names = list.stdout.lineSequence().map { it.trim() }
-                        .filter { it.startsWith("package:") }.map { it.removePrefix("package:") }.toSet()
-                    if (list.ok && names.isNotEmpty()) packages = names
-                    else packageFailure = "应用列表查询失败：" + list.stderr.ifBlank { list.stdout }
-                } catch (e: Exception) {
-                    packageFailure = e.message ?: e.javaClass.simpleName
+            if (activeShell != null) {
+                inspect(activeShell)
+            } else {
+                clientFactory().use { client ->
+                    if (!client.connect()) throw IOException("电视拒绝了 ADB 认证，请在电视上允许调试")
+                    inspect(client::shell)
                 }
             }
         } catch (e: Exception) {

@@ -20,9 +20,7 @@ class AdbTvControllerTest {
         defaultTimeoutMs = 1_000
     )
     private val controller = AdbTvController(
-        transport = transport,
-        replenishAttempts = 3,
-        sleeper = { } // 测试不真睡 1.5s
+        transport = transport
     )
 
     private fun ok(stdout: String = "") = ShellResult(0, stdout, "")
@@ -44,7 +42,7 @@ class AdbTvControllerTest {
     }
 
     @Test
-    fun launchSendsAmStartThenReplenishesWhileAlive() {
+    fun launchDoesNotToggleGlobalPlaybackEvenWhenMpvIsAlive() {
         fake.respond({ it.startsWith("pidof ") }) { ok("4321\n") }
         val ack = controller.launch("http://192.168.10.241:8100/live/5017134")
 
@@ -53,10 +51,8 @@ class AdbTvControllerTest {
             "am start -a android.intent.action.VIEW -d http://192.168.10.241:8100/live/5017134 -n is.xyz.mpv/.MPVActivity",
             fake.commands.first()
         )
-        assertEquals(3, fake.commands.count { it == "input keyevent 85" }, "存活时补满 3 次 keyevent 85")
-        assertEquals(3, fake.commands.count { it == "pidof is.xyz.mpv" })
-        assertEquals(7, fake.commands.size, "am start + 3x(pidof+keyevent85)")
-        assertTrue(ack.detail.contains("keyevent85 x3"))
+        assertEquals(1, fake.commands.size, "起播只发目标 Intent，不触碰全局媒体会话")
+        assertTrue(ack.detail.contains("no global media keys"))
     }
 
     @Test
@@ -80,7 +76,7 @@ class AdbTvControllerTest {
     }
 
     @Test
-    fun launchSkipsReplenishWhenAppNotAlive() {
+    fun launchDoesNotSendMediaKeysWhenMpvIsNotAlive() {
         fake.respond({ it.startsWith("pidof ") }) { ok("") }
         fake.respond({ it == "ps -A" }) { ok("PID USER NAME\n") }
         fake.respond({ it.startsWith("ps | grep") }) { ok("") }
@@ -88,7 +84,7 @@ class AdbTvControllerTest {
 
         assertTrue(ack.ok)
         assertEquals(0, fake.commands.count { it == "input keyevent 85" }, "进程已死不补发")
-        assertTrue(ack.detail.contains("keyevent85 x0"))
+        assertTrue(ack.detail.contains("no global media keys"))
     }
 
     @Test
@@ -140,8 +136,6 @@ class AdbTvControllerTest {
 
     private fun controllerWith(dump: String) = AdbTvController(
         transport = transport,
-        replenishAttempts = 3,
-        sleeper = { },
         mediaSession = object : tvrc.core.media.MediaSessionTextSource {
             override fun dumpMediaSessions(): String = dump
         }
@@ -182,8 +176,7 @@ class AdbTvControllerTest {
         fake.respond({ it == "pidof is.xyz.mpv" }) { ok("4321\n") }
         val status = AdbTvController(
             transport = transport,
-            sleeper = { },
-            mediaSession = object : tvrc.core.media.MediaSessionTextSource {
+                mediaSession = object : tvrc.core.media.MediaSessionTextSource {
                 override fun dumpMediaSessions(): String = throw IllegalStateException("dumpsys permission denied")
             }
         ).probe()

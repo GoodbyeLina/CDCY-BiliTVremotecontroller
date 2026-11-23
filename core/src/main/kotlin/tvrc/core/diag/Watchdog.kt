@@ -16,7 +16,9 @@ data class WatchdogInput(
     val lastRestartMs: Long,
     val stallThresholdMs: Long = DEFAULT_STALL_MS,
     val maxRestarts: Int = DEFAULT_MAX_RESTARTS,
-    val cooldownMs: Long = DEFAULT_COOLDOWN_MS
+    val cooldownMs: Long = DEFAULT_COOLDOWN_MS,
+    // 状态迁移时间不是媒体进度；只有可靠的持续位置采样才可启用停滞恢复。
+    val progressReliable: Boolean = false
 ) {
     companion object {
         const val DEFAULT_STALL_MS = 30_000L
@@ -34,7 +36,7 @@ sealed interface WatchdogDecision {
 object Watchdog {
 
     fun decide(input: WatchdogInput): WatchdogDecision {
-        if (!input.playing) return WatchdogDecision.Nothing
+        if (!input.playing || !input.progressReliable) return WatchdogDecision.Nothing
         val stalled = input.nowMs - input.lastProgressMs
         if (stalled < input.stallThresholdMs) return WatchdogDecision.Nothing
         if (input.restartCount >= input.maxRestarts) {

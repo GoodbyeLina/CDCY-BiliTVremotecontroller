@@ -18,6 +18,7 @@ import tvrc.core.engine.SystemClock
 import tvrc.core.http.HttpUrlConnectionFetcher
 import tvrc.core.http.MiniHttpServer
 import tvrc.core.http.UpstreamFetcher
+import tvrc.core.http.MediaTransferEvent
 import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
 
@@ -43,7 +44,9 @@ class AppGraph(
     private val allowDirectUrl: Boolean = false,
     private val watchdogIntervalMs: Long = 10_000L,
     /** 状态外流口（:app 的前台服务靠它刷通知与 UI；默认空实现，老测试零影响）。 */
-    private val onState: (PlaybackState) -> Unit = {}
+    private val onState: (PlaybackState) -> Unit = {},
+    private val onMediaEvent: (MediaTransferEvent) -> Unit = {},
+    private val onMessage: (String, String) -> Unit = { _, _ -> }
 ) : Closeable {
 
     private val liveCache = ConcurrentHashMap<Long, String>()
@@ -83,7 +86,8 @@ class AppGraph(
         resolveLive = { room -> resolveLiveUrl(room) },
         videoIds = { allowedVideos },
         resolveVideo = { bvid -> resolveVideoUrl(bvid) },
-        allowDirectUrl = allowDirectUrl
+        allowDirectUrl = allowDirectUrl,
+        onMediaEvent = { event -> runCatching { onMediaEvent(event) } }
     )
 
     val engine: PlaybackEngine = PlaybackEngine(
@@ -93,7 +97,10 @@ class AppGraph(
         idleTimeoutMs = config.idleTimeoutMinutes.toLong() * 60_000L,
         logger = { msg -> ringLog.add(LogLevel.DEBUG, "engine", msg, clock.nowMs()) },
         onState = { state -> onEngineState(state) },
-        onMessage = { code, text -> ringLog.add(LogLevel.WARN, code, text, clock.nowMs()) },
+        onMessage = { code, text ->
+            ringLog.add(LogLevel.WARN, code, text, clock.nowMs())
+            runCatching { onMessage(code, text) }
+        },
         onIdleShutdown = {
             ringLog.add(LogLevel.INFO, "idle", "空闲超时，停止播放并关闭代理", clock.nowMs())
             shutdownForIdle()
@@ -113,6 +120,7 @@ class AppGraph(
     }
 
     fun stop() {
+        server.cancelMediaRequests()
         engine.stop()
         ringLog.add(LogLevel.INFO, "app", "用户停止", clock.nowMs())
     }
@@ -172,6 +180,23 @@ class AppGraph(
     }
 
     private fun onEngineState(state: PlaybackState) {
+        // Notify(Starting) precedes Launch: authorize newly imported rooms before mpv requests them.
+        val session = when (state) {
+            is PlaybackState.Starting -> state.session
+            is PlaybackState.Playing -> state.session
+            is PlaybackState.Switching -> state.session
+            else -> null
+        }
+        if (session != null) {
+            currentSession = session
+            allowedRooms = allowedRooms + session.rooms.mapNotNull { target ->
+                runCatching {
+                    val uri = java.net.URI(target)
+                    if (uri.path != "/live" && uri.path != "/live.flv") null
+                    else tvrc.core.http.HttpParsing.parseQuery(uri.rawQuery.orEmpty())["room"]?.toLongOrNull()
+                }.getOrNull()
+            }
+        }
         lastState = state
         runCatching { onState(state) }
         if (state is PlaybackState.Playing) {
@@ -201,7 +226,7 @@ class AppGraph(
             liveCache[roomId] = url
             url
         } catch (e: Exception) {
-            ringLog.add(LogLevel.WARN, "proxy", "解析直播直链失败 room=" + roomId + ": " + e.message, clock.nowMs())
+            ringLog.add(LogLevel.WARN, "proxy", "解析直播直链失败 room=" + roomId + ": " + e.javaClass.simpleName, clock.nowMs())
             liveCache[roomId]
         }
     }
@@ -212,7 +237,7 @@ class AppGraph(
             videoCache[bvid] = url
             url
         } catch (e: Exception) {
-            ringLog.add(LogLevel.WARN, "proxy", "解析点播直链失败 bvid=" + bvid + ": " + e.message, clock.nowMs())
+            ringLog.add(LogLevel.WARN, "proxy", "解析点播直链失败 bvid=" + bvid + ": " + e.javaClass.simpleName, clock.nowMs())
             videoCache[bvid]
         }
     }
