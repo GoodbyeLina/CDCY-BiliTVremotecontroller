@@ -22,6 +22,9 @@ import tvrc.core.http.MediaTransferEvent
 import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
 
+/** 直播直链缓存时长（毫秒）：与二代 station.py 的 600 秒一致。 */
+private const val LIVE_URL_TTL_MS = 600_000L
+
 /**
  * 装配根（L 清单之后的「收口」层）：把配置、代理、adb、状态机、看门狗、环形日志装成一条完整链路。
  *
@@ -49,8 +52,12 @@ class AppGraph(
     private val onMessage: (String, String) -> Unit = { _, _ -> }
 ) : Closeable {
 
-    private val liveCache = ConcurrentHashMap<Long, String>()
+    /** 直播直链缓存：10 分钟内复用，避免播放器每次重连都去打 B站接口（也降低风控概率）。 */
+    private val liveCache = ConcurrentHashMap<Long, CachedUrl>()
+    private val resolveLocks = ConcurrentHashMap<Long, Any>()
     private val videoCache = ConcurrentHashMap<String, String>()
+
+    private data class CachedUrl(val url: String, val expiresAt: Long)
 
     @Volatile
     private var allowedRooms: Set<Long> = config.rooms.toSet()
@@ -221,15 +228,36 @@ class AppGraph(
     }
 
     private fun resolveLiveUrl(roomId: Long): String? {
-        return try {
-            val url = liveApi.flvStream(roomId).url
-            liveCache[roomId] = url
-            url
-        } catch (e: Exception) {
-            ringLog.add(LogLevel.WARN, "proxy", "解析直播直链失败 room=" + roomId + ": " + e.javaClass.simpleName, clock.nowMs())
-            liveCache[roomId]
+        val now = clock.nowMs()
+        liveCache[roomId]?.let { if (it.expiresAt > now) return it.url }
+        // 同一房间并发请求（播放器的探测连接 + 播放连接）只解析一次。
+        val lock = resolveLocks.computeIfAbsent(roomId) { Any() }
+        synchronized(lock) {
+            val fresh = clock.nowMs()
+            liveCache[roomId]?.let { if (it.expiresAt > fresh) return it.url }
+            return try {
+                val url = liveApi.flvStream(roomId).url
+                liveCache[roomId] = CachedUrl(url, fresh + LIVE_URL_TTL_MS)
+                ringLog.add(
+                    LogLevel.INFO, "proxy",
+                    "直播直链就绪 room=" + roomId + " qn=" + config.liveQn + " host=" + hostOf(url),
+                    fresh
+                )
+                url
+            } catch (e: Exception) {
+                ringLog.add(
+                    LogLevel.WARN, "proxy",
+                    "解析直播直链失败 room=" + roomId + " qn=" + config.liveQn + ": " + e.message,
+                    clock.nowMs()
+                )
+                // 过期缓存也比没有强：B站偶发接口抖动时，直接用 10 分钟前的直链续播。
+                liveCache[roomId]?.url
+            }
         }
     }
+
+    private fun hostOf(url: String): String =
+        runCatching { java.net.URI(url).host ?: "?" }.getOrDefault("?")
 
     private fun resolveVideoUrl(bvid: String): String? {
         return try {

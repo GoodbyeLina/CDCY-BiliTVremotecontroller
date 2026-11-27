@@ -5,13 +5,16 @@ package tvrc.core
  */
 object TvrcVersion {
     /** 应用版本（三代原生 App）。 */
-    const val APP = "3.0.0-alpha.6"
+    const val APP = "3.0.0-alpha.7"
 
     /** 配置 schema 版本，与 AppConfig.schemaVersion 一致；升版本必须带迁移。 */
     const val CONFIG_SCHEMA = 1
 
-    /** core 对外契约版本：TvController / AdbClient / Scheduler 三个接口的语义版本。 */
-    const val CORE_API = 1
+    /**
+     * core 对外契约版本：TvController / AdbClient / Scheduler 三个接口的语义版本。
+     * v2：TvStatus 新增可选 state（media_session 原始播放状态），旧实现可继续只填 alive/playing。
+     */
+    const val CORE_API = 2
 
     /** 契约冻结日期（ISO）。 */
     const val FROZEN_AT = "2026-11-13"

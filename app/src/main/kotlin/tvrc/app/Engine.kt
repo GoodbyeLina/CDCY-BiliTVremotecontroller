@@ -10,20 +10,24 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import tvrc.core.AppGraph
 import tvrc.core.IdleReason
 import tvrc.core.Mode
 import tvrc.core.PlaybackState
 import tvrc.core.Session
 import tvrc.core.TvController
+import tvrc.core.TvStatus
 import tvrc.core.adb.AdbKeyStore
 import tvrc.core.adb.AdbTvController
 import tvrc.core.adb.AdbTransport
 import tvrc.core.adb.DadbClient
+import tvrc.core.adb.ShellResult
 import tvrc.core.bili.BiliLiveApi
 import tvrc.core.bili.RealBiliLiveApi
 import tvrc.core.bili.RealVideoUrlResolver
@@ -47,6 +51,13 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+
+/** 顺序播放：起播后多久还没确认在播就跳过（网络/电视慢时留足余量）。 */
+private const val PLAYLIST_START_TIMEOUT_MS = 120_000L
+/** 顺序播放：连续几次探针确认「已停止」才切下一条，避免缓冲抖动误判。 */
+private const val PLAYLIST_END_PROBES = 2
+/** 没有 media_session 状态（可能 mpv 已退出到空闲）时更保守，多看几次。 */
+private const val PLAYLIST_END_PROBES_UNKNOWN = 3
 
 /** 本机在局域网里的 IPv4（电视要能访问到手机，绝不能给 127.0.0.1）。 */
 object LanAddress {
@@ -331,16 +342,28 @@ class PlaybackService : Service() {
 
         const val ACTION_PLAY_ITEM = "tvrc.action.PLAY_ITEM"
         const val ACTION_PLAY_ROOM = "tvrc.action.PLAY_ROOM"
+        const val ACTION_PLAY_PLAYLIST = "tvrc.action.PLAY_PLAYLIST"
         const val ACTION_STOP = "tvrc.action.STOP"
         const val ACTION_POLL = "tvrc.action.POLL"
         const val EXTRA_ITEM = "itemId"
         const val EXTRA_ROOM = "roomId"
+        const val EXTRA_ITEM_IDS = "itemIds"
         const val EXTRA_REASON = "reason"
 
         fun playItem(ctx: Context, itemId: String, reason: String = "manual") {
             val i = Intent(ctx, PlaybackService::class.java).apply {
                 action = ACTION_PLAY_ITEM
                 putExtra(EXTRA_ITEM, itemId)
+                putExtra(EXTRA_REASON, reason)
+            }
+            start(ctx, i)
+        }
+
+        /** 按传入顺序播放多个内容库条目（合集在服务里展开为每一集）。 */
+        fun playPlaylist(ctx: Context, itemIds: List<String>, reason: String = "manual") {
+            val i = Intent(ctx, PlaybackService::class.java).apply {
+                action = ACTION_PLAY_PLAYLIST
+                putStringArrayListExtra(EXTRA_ITEM_IDS, ArrayList(itemIds))
                 putExtra(EXTRA_REASON, reason)
             }
             start(ctx, i)
@@ -388,13 +411,29 @@ class PlaybackService : Service() {
     private var probeRunning = false
     private var tvProbeFailures = 0
     private var tvProbeSamples = 0
-
     private var tv: TvController? = null
     private var handler: Handler? = null
     private val io = Executors.newFixedThreadPool(3)
+    /** 播放期间保活：息屏后不让 CPU 休眠，也不让 Wi-Fi 降速，避免投屏卡顿。 */
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     @Volatile
     private var startedGraph = false
+
+    // ---- 顺序播放（节目单多选 / 立即顺序播放）----
+    @Volatile
+    private var playlistQueue: List<LibItem> = emptyList()
+    @Volatile
+    private var playlistIndex = 0
+    @Volatile
+    private var playlistReason = "manual"
+    @Volatile
+    private var playlistLaunchAt = 0L
+    @Volatile
+    private var playlistSawPlaying = false
+    @Volatile
+    private var playlistNotPlaying = 0
 
     private var monitorNextAt = 0L
     private var scheduleNextAt = 0L
@@ -429,6 +468,12 @@ class PlaybackService : Service() {
                 if (room > 0) playRoom(room, reason)
             }
 
+            ACTION_PLAY_PLAYLIST -> {
+                val ids = intent.getStringArrayListExtra(EXTRA_ITEM_IDS).orEmpty()
+                val reason = intent.getStringExtra(EXTRA_REASON) ?: "manual"
+                if (ids.isNotEmpty()) Ctl.bg { startPlaylist(ids, reason) }
+            }
+
             ACTION_STOP -> stopPlayback()
             else -> Unit
         }
@@ -445,14 +490,46 @@ class PlaybackService : Service() {
         startedGraph = false
         runCatching { transport?.close() }
         transport = null
+        releasePlaybackLocks()
         io.shutdownNow()
         if (Ctl.service === this) Ctl.service = null
         super.onDestroy()
     }
 
+    private fun acquirePlaybackLocks() {
+        runCatching {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            if (wakeLock == null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tvrc:playback")
+                    .apply { setReferenceCounted(false) }
+            }
+            if (wakeLock?.isHeld != true) wakeLock?.acquire()
+        }
+        runCatching {
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            if (wifiLock == null) {
+                val mode = if (Build.VERSION.SDK_INT >= 29) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wm.createWifiLock(mode, "tvrc:wifi")
+                    .apply { setReferenceCounted(false) }
+            }
+            if (wifiLock?.isHeld != true) wifiLock?.acquire()
+        }
+    }
+
+    private fun releasePlaybackLocks() {
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
+    }
+
     // ---- 播放 ----
 
     private fun playItem(itemId: String, reason: String) {
+        clearPlaylist("手动播放其他内容")
         val item = store.item(itemId)
         if (item == null) {
             Ctl.say("内容库里找不到这条（可能已删除）")
@@ -469,11 +546,142 @@ class PlaybackService : Service() {
     }
 
     private fun playRoom(roomId: Long, reason: String) {
+        clearPlaylist("手动播放直播")
         val item = store.items().firstOrNull { it.kind == ItemKind.LIVE && it.roomId == roomId }
             ?: LibItem(id = "", kind = ItemKind.LIVE, title = "直播间 " + roomId, roomId = roomId)
         val ticket = playbackRequests.next()
         if (reason == "manual") Ctl.onExplicitPlay()
         Ctl.bg { startItem(item, reason, ticket) }
+    }
+
+    // ---- 顺序播放 ----
+
+    /**
+     * 把内容库条目按选择顺序展开成「单条视频队列」：
+     * 合集展开为每一集，直播跳过（顺序播放只排视频）。之后每条单独起播，
+     * 由探针确认「播完/进程退出」再切下一条，而不是按时长盲切。
+     */
+    private fun startPlaylist(itemIds: List<String>, reason: String) {
+        val queue = ArrayList<LibItem>()
+        var skippedLive = 0
+        var skippedEmpty = 0
+        for (id in itemIds) {
+            val item = store.item(id) ?: continue
+            when (item.kind) {
+                ItemKind.VIDEO -> queue += item
+                ItemKind.SERIES -> {
+                    if (item.bvids.isEmpty()) {
+                        skippedEmpty++
+                    } else {
+                        item.bvids.forEachIndexed { idx, bv ->
+                            queue += item.copy(
+                                kind = ItemKind.VIDEO,
+                                bvid = bv,
+                                bvids = emptyList(),
+                                title = item.title + " · " + (idx + 1),
+                                subtitle = ""
+                            )
+                        }
+                    }
+                }
+                ItemKind.LIVE -> skippedLive++
+            }
+        }
+        if (skippedLive > 0) {
+            store.log("playlist", "跳过 " + skippedLive + " 个直播条目（顺序播放只排视频）")
+            Ctl.say("顺序播放只排视频，已跳过 " + skippedLive + " 个直播")
+        }
+        if (skippedEmpty > 0) store.log("playlist", "跳过 " + skippedEmpty + " 个空合集")
+        if (queue.isEmpty()) {
+            Ctl.say("没有可顺序播放的视频")
+            store.trace("节目单", "顺序播放", TraceStatus.ERROR, "没有可顺序播放的视频", "")
+            return
+        }
+        playlistQueue = queue
+        playlistIndex = 0
+        playlistReason = reason
+        playlistSawPlaying = false
+        playlistNotPlaying = 0
+        store.log("playlist", "开始顺序播放：" + queue.size + " 项（" + reasonLabel(reason) + "）")
+        store.trace(
+            "节目单", "顺序播放", TraceStatus.INFO,
+            "开始顺序播放 " + queue.size + " 项",
+            queue.take(20).joinToString("\n") { "· " + it.title }
+        )
+        launchPlaylistItem()
+    }
+
+    private fun launchPlaylistItem() {
+        val index = playlistIndex
+        val item = playlistQueue.getOrNull(index) ?: return
+        playlistLaunchAt = System.currentTimeMillis()
+        playlistSawPlaying = false
+        playlistNotPlaying = 0
+        store.log("playlist", "第 " + (index + 1) + "/" + playlistQueue.size + " 项：" + item.title)
+        val ticket = playbackRequests.next()
+        Ctl.bg { startItem(item, playlistReason, ticket) }
+    }
+
+    /**
+     * 探针驱动：确认真的开始播过一次后，连续几次看到「已停止/进程退出」才切下一条。
+     * 暂停（state=2）、缓冲（state=6）不算结束，避免用户按暂停时被自动跳过。
+     */
+    private fun maybeAdvancePlaylist(status: TvStatus, connected: Boolean) {
+        if (playlistQueue.isEmpty() || !connected) return
+        val now = System.currentTimeMillis()
+        if (status.playing) {
+            playlistSawPlaying = true
+            playlistNotPlaying = 0
+            return
+        }
+        if (!playlistSawPlaying) {
+            if (now - playlistLaunchAt >= PLAYLIST_START_TIMEOUT_MS) {
+                store.log("playlist", "第 " + (playlistIndex + 1) + " 项起播超时，跳过")
+                advancePlaylist("起播超时")
+            }
+            return
+        }
+        when (status.state) {
+            2, 4, 5, 6 -> { // 暂停 / 快进 / 快退 / 缓冲
+                playlistNotPlaying = 0
+                return
+            }
+        }
+        val ended = !status.alive || status.state == null ||
+            status.state == 0 || status.state == 1 || status.state == 7
+        if (!ended) {
+            playlistNotPlaying = 0
+            return
+        }
+        playlistNotPlaying++
+        val need = if (status.state == null && status.alive) PLAYLIST_END_PROBES_UNKNOWN else PLAYLIST_END_PROBES
+        if (playlistNotPlaying >= need) advancePlaylist("播放结束")
+    }
+
+    private fun advancePlaylist(why: String) {
+        if (playlistQueue.isEmpty()) return
+        val finished = playlistQueue.getOrNull(playlistIndex)
+        if (finished != null) store.log("playlist", "完成：" + finished.title + "（" + why + "）")
+        playlistIndex++
+        if (playlistIndex >= playlistQueue.size) {
+            val total = playlistQueue.size
+            clearPlaylist("全部播放完毕")
+            releasePlaybackLocks()
+            store.log("playlist", "全部 " + total + " 项播放完毕")
+            store.trace("节目单", "顺序播放", TraceStatus.SUCCESS, "全部 " + total + " 项播放完毕", "")
+            Ctl.say("顺序播放完成（" + total + " 项）")
+        } else {
+            launchPlaylistItem()
+        }
+    }
+
+    private fun clearPlaylist(reason: String) {
+        if (playlistQueue.isEmpty()) return
+        store.log("playlist", "顺序播放已结束：" + reason)
+        playlistQueue = emptyList()
+        playlistIndex = 0
+        playlistSawPlaying = false
+        playlistNotPlaying = 0
     }
 
     private fun startItem(item: LibItem, reason: String, ticket: Long) {
@@ -614,6 +822,7 @@ class PlaybackService : Service() {
 
     private fun playSession(session: Session) {
         val cfg = store.config()
+        acquirePlaybackLocks()
         if (!startedGraph || graph == null) {
             val g = buildGraph(cfg, session)
             graph = g
@@ -667,7 +876,7 @@ class PlaybackService : Service() {
         return AppGraph(
             config = effective,
             tv = controller,
-            liveApi = RealBiliLiveApi(http),
+            liveApi = RealBiliLiveApi(http, liveQn = effective.liveQn),
             videoResolver = RealVideoUrlResolver(http),
             fetcher = HttpUrlConnectionFetcher(baseHeaders = emptyMap()),
             sessionProvider = { initial },
@@ -694,14 +903,17 @@ class PlaybackService : Service() {
         if (signature == lastTracedPlayback) return
         lastTracedPlayback = signature
         when (state) {
-            is PlaybackState.Idle -> store.trace(
-                "播放", "状态", TraceStatus.INFO, "播放已停止",
-                when (state.reason) {
-                    IdleReason.USER_STOP -> "原因：用户停止"
-                    IdleReason.IDLE_TIMEOUT -> "原因：空闲超时"
-                    IdleReason.NEVER_STARTED -> "原因：尚未开始"
-                }
-            )
+            is PlaybackState.Idle -> {
+                releasePlaybackLocks()
+                store.trace(
+                    "播放", "状态", TraceStatus.INFO, "播放已停止",
+                    when (state.reason) {
+                        IdleReason.USER_STOP -> "原因：用户停止"
+                        IdleReason.IDLE_TIMEOUT -> "原因：空闲超时"
+                        IdleReason.NEVER_STARTED -> "原因：尚未开始"
+                    }
+                )
+            }
             is PlaybackState.Starting -> store.trace(
                 "播放", "等待电视", TraceStatus.INFO,
                 "已发送唤醒和起播命令，等待回执",
@@ -735,11 +947,14 @@ class PlaybackService : Service() {
     private fun playbackElapsed(): Long? =
         if (currentPlaybackStartedAt > 0) System.currentTimeMillis() - currentPlaybackStartedAt else null
 
-    private fun liveApi(): BiliLiveApi = RealBiliLiveApi(UrlConnectionHttpText())
+    private fun liveApi(): BiliLiveApi =
+        RealBiliLiveApi(UrlConnectionHttpText(), liveQn = store.config().liveQn)
 
     private fun stopPlayback() {
         val stopTicket = playbackRequests.next() // no main-thread wait on a slow ADB launch
         Ctl.onUserStopped()
+        clearPlaylist("用户停止")
+        releasePlaybackLocks()
         Ctl.bg {
             synchronized(playbackCommit) {
                 // A subsequent explicit play supersedes this stop job.
@@ -856,6 +1071,7 @@ class PlaybackService : Service() {
             lastTvConnected = connected
             lastTvPlaying = status.playing
         }
+        maybeAdvancePlaylist(status, connected)
         return connected
     }
 
@@ -905,7 +1121,9 @@ class PlaybackService : Service() {
                 Thread.sleep(1_200L)
                 runCatching { tv?.wake() }
             }
-            playItem(s.itemId, "schedule")
+            val ids = s.allItemIds
+            if (ids.size > 1) startPlaylist(ids, "schedule")
+            else ids.firstOrNull()?.let { playItem(it, "schedule") }
         }
     }
 

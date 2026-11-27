@@ -87,7 +87,10 @@ data class LibItem(
     }
 }
 
-/** 节目单条目（R-07）：到点由服务拉起指定内容，可选先唤醒电视。 */
+/**
+ * 节目单条目（R-07）：到点由服务拉起指定内容，可选先唤醒电视。
+ * [itemIds] 是按顺序播放的内容库条目；旧数据没有这个字段时退回单个 [itemId]。
+ */
 data class ScheduleItem(
     val id: String,
     val itemId: String,
@@ -97,8 +100,13 @@ data class ScheduleItem(
     val days: Set<Int>,          // 1=周一 .. 7=周日；空集 = 每天
     val wake: Boolean = true,
     val enabled: Boolean = true,
-    val lastRunKey: String = ""  // "2026-11-20 20:30"，防同分钟重复执行
+    val lastRunKey: String = "", // "2026-11-20 20:30"，防同分钟重复执行
+    val itemIds: List<String> = emptyList()
 ) {
+    /** 兼容旧数据：没有 itemIds 时就是单个 itemId。 */
+    val allItemIds: List<String>
+        get() = itemIds.ifEmpty { listOf(itemId).filter { it.isNotBlank() } }
+
     fun timeText(): String = "%02d:%02d".format(hour, minute)
 
     fun daysText(): String = if (days.isEmpty()) "每天" else
@@ -114,6 +122,7 @@ data class ScheduleItem(
         put("wake", wake)
         put("enabled", enabled)
         put("lastRunKey", lastRunKey)
+        put("itemIds", JSONArray(itemIds))
     }
 
     companion object {
@@ -126,7 +135,10 @@ data class ScheduleItem(
             days = o.optJSONArray("days")?.let { a -> (0 until a.length()).map { a.optInt(it) }.toSet() } ?: emptySet(),
             wake = o.optBoolean("wake", true),
             enabled = o.optBoolean("enabled", true),
-            lastRunKey = o.optString("lastRunKey")
+            lastRunKey = o.optString("lastRunKey"),
+            itemIds = o.optJSONArray("itemIds")?.let { a ->
+                (0 until a.length()).mapNotNull { i -> a.optString(i).takeIf { s -> s.isNotBlank() } }
+            } ?: emptyList()
         )
     }
 }
@@ -419,6 +431,15 @@ class Store(context: Context) {
             schedules[idx] = schedules[idx].copy(enabled = enabled)
             persist()
         }
+    }
+
+    /** 调整节目单内内容的播放顺序（itemId 同步为首项，兼容旧字段）。 */
+    @Synchronized
+    fun setScheduleItems(id: String, itemIds: List<String>) {
+        val idx = schedules.indexOfFirst { it.id == id }
+        if (idx < 0 || itemIds.isEmpty()) return
+        schedules[idx] = schedules[idx].copy(itemId = itemIds.first(), itemIds = itemIds)
+        persist()
     }
 
     @Synchronized

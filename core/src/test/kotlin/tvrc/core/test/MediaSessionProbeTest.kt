@@ -96,4 +96,21 @@ class MediaSessionProbeTest {
         assertFalse(state.active)
         assertTrue(state.playing, "state=3 独立成行也应识别")
     }
+
+    @Test
+    fun exposesRawPlaybackStateForPauseAndStop() {
+        val paused = """
+            Media sessions:
+              Session p: is.xyz.mpv/x
+                PlaybackState: state=2, position=10
+        """.trimIndent()
+        val stopped = """
+            Media sessions:
+              Session s: is.xyz.mpv/x
+                PlaybackState: state=1, position=999
+        """.trimIndent()
+        assertEquals(2, MediaSessionProbe.parse(paused, pkg)?.state ?: -1)
+        assertEquals(1, MediaSessionProbe.parse(stopped, pkg)?.state ?: -1)
+        assertFalse(MediaSessionProbe.parse(stopped, pkg)!!.playing)
+    }
 }
