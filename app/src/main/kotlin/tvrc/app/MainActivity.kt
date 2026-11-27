@@ -18,11 +18,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
-import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -46,6 +45,11 @@ import java.util.Locale
  */
 class MainActivity : Activity() {
 
+    private companion object {
+        const val REQ_PICK_TEXT = 1001
+        const val MAX_IMPORT_BYTES = 1024 * 1024
+    }
+
     private lateinit var store: Store
     private lateinit var content: LinearLayout
     private lateinit var navBar: LinearLayout
@@ -58,6 +62,9 @@ class MainActivity : Activity() {
     private var draft = ""
     private var importField: EditText? = null
     private var searchField: EditText? = null
+    private var monitorField: EditText? = null
+    private var libraryChips: LinearLayout? = null
+    private var libraryList: LinearLayout? = null
     private var importing = false
     private var importMessage = ""
     private var selfTest: List<SelfTest.Item> = emptyList()
@@ -66,7 +73,10 @@ class MainActivity : Activity() {
 
     // 状态探针不能重建正在编辑的表单，否则焦点、键盘和系统粘贴目标都会丢失。
     private val refreshCb: () -> Unit = { runOnUiThread {
-        if (tab == 3 || (tab == 0 && importField?.hasFocus() == true)) updateStatus() else render()
+        val editingForm = importField?.hasFocus() == true ||
+            searchField?.hasFocus() == true ||
+            monitorField?.hasFocus() == true
+        if (tab == 3 || editingForm) updateStatus() else render()
     } }
     private val tabs = listOf("内容库", "节目单", "监控", "设备")
     private val filters = listOf("全部", "视频", "合集", "直播", "收藏")
@@ -203,8 +213,20 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        // 正在编辑搜索框时不能重建整页：输入框被 removeAllViews 移除后，焦点、输入法
+        // 和系统粘贴目标都会丢。只重画筛选块与结果列表，其它状态变化仍然即时可见。
+        if (tab == 0 && searchField?.hasFocus() == true) {
+            updateStatus()
+            renderLibraryResults()
+            return
+        }
         updateStatus()
         content.removeAllViews()
+        importField = null
+        searchField = null
+        monitorField = null
+        libraryChips = null
+        libraryList = null
         when (tab) {
             0 -> renderHome()
             1 -> renderSchedule()
@@ -251,15 +273,13 @@ class MainActivity : Activity() {
         content.addView(importCard())
         content.addView(vpad(4))
 
-        val chips = row()
-        filters.forEach { f ->
-            chips.addView(chip(f, filter == f) { filter = f; render() })
-            chips.addView(hpad(6))
-        }
-        content.addView(chips)
+        libraryChips = row()
+        content.addView(libraryChips)
+        renderLibraryFilter()
         content.addView(vpad(8))
 
-        // 搜索（R-06）：标题 / BV / 房间号都能命中；本地过滤，零网络
+        // 搜索（R-06）：标题 / BV / 房间号都能命中；本地过滤，零网络。
+        // 输入时只刷新结果列表，不重建整页——否则输入框会被移除，焦点和输入法一起消失。
         val searchRow = row()
         val sInput = EditText(this).apply {
             hint = "搜索标题 / BV / 房间号"
@@ -278,7 +298,7 @@ class MainActivity : Activity() {
                     val q = s?.toString()?.trim() ?: ""
                     if (q != searchQuery) {
                         searchQuery = q
-                        render()
+                        renderLibraryResults()
                     }
                 }
             })
@@ -286,11 +306,37 @@ class MainActivity : Activity() {
         searchField = sInput
         searchRow.addView(sInput)
         searchRow.addView(hpad(8))
-        searchRow.addView(button("清空", false) { searchQuery = ""; render() })
+        searchRow.addView(button("清空", false) {
+            searchQuery = ""
+            searchField?.setText("")
+            renderLibraryResults()
+        })
         content.addView(searchRow)
         content.addView(vpad(8))
 
-        val list = store.items()
+        libraryList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(libraryList)
+        renderLibraryResults()
+    }
+
+    private fun renderLibraryFilter() {
+        val chips = libraryChips ?: return
+        chips.removeAllViews()
+        filters.forEach { f ->
+            chips.addView(chip(f, filter == f) {
+                filter = f
+                renderLibraryFilter()
+                renderLibraryResults()
+            })
+            chips.addView(hpad(6))
+        }
+    }
+
+    /** 只重建结果列表；搜索框本身保持原对象，焦点、光标和输入法都不受影响。 */
+    private fun renderLibraryResults() {
+        val list = libraryList ?: return
+        list.removeAllViews()
+        val items = store.items()
             .filter { item ->
                 when (filter) {
                     "视频" -> item.kind == ItemKind.VIDEO
@@ -300,16 +346,16 @@ class MainActivity : Activity() {
                     else -> true
                 }
             }
-            .filter { searchQuery.isBlank() || it.searchKey().contains(searchQuery) }
+            .filter { searchQuery.isBlank() || it.searchKey().contains(searchQuery.lowercase()) }
 
-        if (list.isEmpty()) {
-            content.addView(emptyState(
+        if (items.isEmpty()) {
+            list.addView(emptyState(
                 if (store.items().isEmpty()) "内容库还是空的" else "没有符合筛选的条目",
                 "把 B站 分享链接粘到上面的输入框，点「导入」"
             ))
             return
         }
-        list.forEach { content.addView(itemCard(it)) }
+        items.forEach { list.addView(itemCard(it)) }
     }
 
     private fun statusCard(): View {
@@ -348,7 +394,7 @@ class MainActivity : Activity() {
         val c = card()
         c.addView(label("导入内容", 15f, T.TEXT, true))
         c.addView(vpad(4))
-        c.addView(label("支持：房间号 / live.bilibili.com 网址 / BV 号 / 合集链接 / b23.tv 短链 / 整段分享文案", 11f, T.DIM))
+        c.addView(label("支持：房间号 / live.bilibili.com 网址 / BV 号 / 合集链接 / b23.tv 短链 / 整段分享文案。可一次粘贴多条（每行一条），也可以从 txt 文档导入。", 11f, T.DIM))
         c.addView(vpad(8))
         val input = EditText(this).apply {
             hint = "粘贴分享文案或网址"
@@ -358,8 +404,8 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(T.CARD_HI, 12, 1, T.LINE)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 1
-            maxLines = 3
+            minLines = 2
+            maxLines = 8
             setText(draft)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -384,9 +430,54 @@ class MainActivity : Activity() {
             }
         })
         r.addView(hpad(8))
+        r.addView(button("从文件导入", false) { pickTextFile() })
+        r.addView(hpad(8))
         if (importMessage.isNotBlank()) r.addView(label(importMessage, 11f, T.DIM))
         c.addView(r)
         return c
+    }
+
+    private fun pickTextFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/*"
+        }
+        runCatching { startActivityForResult(intent, REQ_PICK_TEXT) }
+            .onFailure { toast("没有可用的文件选择器") }
+    }
+
+    @Deprecated("Android 原生 Activity，沿用 startActivityForResult 避免引入 AndroidX")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PICK_TEXT || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        Ctl.bg {
+            val text = runCatching { readTextFile(uri, MAX_IMPORT_BYTES) }.getOrNull()
+            runOnUiThread {
+                if (text.isNullOrBlank()) {
+                    toast("文件是空的或不是 UTF-8 文本")
+                    return@runOnUiThread
+                }
+                toast("已读取 " + LinkBatch.split(text).size + " 个链接，开始导入")
+                draft = text
+                render()
+                doImport(text)
+            }
+        }
+    }
+
+    private fun readTextFile(uri: Uri, maxBytes: Int): String {
+        val input = contentResolver.openInputStream(uri) ?: return ""
+        return input.use { stream ->
+            val buffer = ByteArray(16 * 1024)
+            val out = java.io.ByteArrayOutputStream()
+            while (out.size() < maxBytes) {
+                val n = stream.read(buffer)
+                if (n <= 0) break
+                out.write(buffer, 0, minOf(n, maxBytes - out.size()))
+            }
+            out.toByteArray().toString(Charsets.UTF_8)
+        }
     }
 
     private fun itemCard(item: LibItem): View {
@@ -417,13 +508,13 @@ class MainActivity : Activity() {
         actions.addView(hpad(8))
         actions.addView(button(if (item.favorite) "取消收藏" else "收藏", false) {
             store.setFavorite(item.id, !item.favorite)
-            render()
+            renderLibraryResults()
         })
         actions.addView(hpad(8))
         actions.addView(button("删除", false) {
             confirm("删除「" + item.title + "」？", "同时会删掉引用它的节目单") {
                 store.removeItem(item.id)
-                render()
+                renderLibraryResults()
             }
         })
         c.addView(actions)
@@ -435,8 +526,10 @@ class MainActivity : Activity() {
         importing = true
         importMessage = "正在识别…"
         val startedAt = System.currentTimeMillis()
+        val links = LinkBatch.split(raw)
         store.trace(
-            "导入", "识别输入", TraceStatus.INFO, "开始识别分享文案或链接",
+            "导入", "识别输入", TraceStatus.INFO,
+            if (links.size > 1) "开始识别 " + links.size + " 个链接" else "开始识别分享文案或链接",
             "输入：" + raw.take(800)
         )
         render()
@@ -447,55 +540,57 @@ class MainActivity : Activity() {
                 RealBiliArchiveApi(UrlConnectionHttpText()),
                 ViewInfoApi(UrlConnectionHttpText())
             )
-            val outcome = try {
-                importer.import(raw)
-            } catch (e: Throwable) {
-                val reason = e.message ?: e.javaClass.simpleName
-                store.trace(
-                    "导入", "识别异常", TraceStatus.ERROR, reason,
-                    "异常类型：" + e.javaClass.name, System.currentTimeMillis() - startedAt
-                )
-                runOnUiThread {
-                    importing = false
-                    importMessage = "导入失败：" + reason
-                    toast(reason)
-                    render()
+            val saved = mutableListOf<LibItem>()
+            val notes = mutableListOf<String>()
+            val failures = mutableListOf<String>()
+            for (link in links) {
+                val outcome = try {
+                    importer.import(link)
+                } catch (e: Throwable) {
+                    ImportOutcome.Fail(e.message ?: e.javaClass.simpleName)
                 }
-                return@bg
+                when (outcome) {
+                    is ImportOutcome.Ok -> {
+                        saved += outcome.items.map { store.upsert(it) }
+                        notes += outcome.note
+                    }
+                    is ImportOutcome.Fail -> failures += outcome.reason
+                }
             }
             runOnUiThread {
                 importing = false
-                when (outcome) {
-                    is ImportOutcome.Ok -> {
-                        val saved = outcome.items.map { store.upsert(it) }
-                        store.log("import", outcome.note + " → " + saved.joinToString { it.title })
-                        val grouped = saved.groupingBy { it.kindLabel }.eachCount()
-                            .entries.joinToString("、") { it.value.toString() + " 条" + it.key }
-                        store.trace(
-                            "导入", "完成", TraceStatus.SUCCESS,
-                            "已导入 " + saved.size + " 条（" + grouped + "）",
-                            buildString {
-                                append(outcome.note)
-                                saved.forEach { item ->
-                                    append("\n目标：").append(diagnosticTarget(item))
-                                }
-                            },
-                            System.currentTimeMillis() - startedAt
-                        )
-                        importMessage = "已导入 " + saved.size + " 条"
-                        toast("已导入：" + saved.joinToString("、") { it.title })
-                    }
-
-                    is ImportOutcome.Fail -> {
-                        store.trace(
-                            "导入", "完成", TraceStatus.ERROR, outcome.reason,
-                            if (outcome.hops.isEmpty()) "输入：" + raw.take(800)
-                            else "解析步骤：\n" + outcome.hops.joinToString("\n"),
-                            System.currentTimeMillis() - startedAt
-                        )
-                        importMessage = "导入失败：" + outcome.reason
-                        toast(outcome.reason)
-                    }
+                val savedItems = saved.distinctBy { it.id }
+                if (savedItems.isNotEmpty()) {
+                    val grouped = savedItems.groupingBy { it.kindLabel }.eachCount()
+                        .entries.joinToString("、") { it.value.toString() + " 条" + it.key }
+                    val failNote = if (failures.isEmpty()) "" else "，失败 " + failures.size + " 个"
+                    store.log("import", "批量导入 " + savedItems.size + " 条" + failNote + " → " + savedItems.joinToString { it.title })
+                    store.trace(
+                        "导入", "完成",
+                        if (failures.isEmpty()) TraceStatus.SUCCESS else TraceStatus.WARNING,
+                        "已导入 " + savedItems.size + " 条（" + grouped + "）" +
+                            if (links.size > 1) "，共识别 " + links.size + " 个链接" + failNote else "",
+                        buildString {
+                            append(notes.distinct().joinToString("\n"))
+                            savedItems.forEach { item ->
+                                append("\n目标：").append(diagnosticTarget(item))
+                            }
+                            failures.forEach { append("\n失败：").append(it) }
+                        },
+                        System.currentTimeMillis() - startedAt
+                    )
+                    importMessage = "已导入 " + savedItems.size + " 条" + failNote
+                    toast("已导入 " + savedItems.size + " 条" + failNote)
+                } else {
+                    val reason = failures.firstOrNull() ?: "没有识别到可导入的链接"
+                    store.trace(
+                        "导入", "完成", TraceStatus.ERROR, reason,
+                        "输入：" + raw.take(800) +
+                            if (failures.size > 1) "\n其他失败：\n" + failures.drop(1).joinToString("\n") else "",
+                        System.currentTimeMillis() - startedAt
+                    )
+                    importMessage = "导入失败：" + reason
+                    toast(reason)
                 }
                 render()
             }
@@ -508,12 +603,17 @@ class MainActivity : Activity() {
         val head = row()
         head.addView(label("节目单", 15f, T.TEXT, true))
         head.addView(android.widget.Space(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
+        head.addView(button("顺序播放", false) { startPlaylistDialog() })
+        head.addView(hpad(6))
         head.addView(button("新建", true) { addScheduleDialog() })
         content.addView(head)
         content.addView(vpad(6))
 
         if (store.schedules().isEmpty()) {
-            content.addView(emptyState("还没有节目单", "到点自动播放：点右上「新建」，选一条内容库条目"))
+            content.addView(emptyState(
+                "还没有节目单",
+                "点「新建」勾选多条内容，到点按顺序播放；急用就点「顺序播放」马上开始"
+            ))
         } else {
             store.schedules().forEach { content.addView(scheduleCard(it)) }
         }
@@ -529,12 +629,17 @@ class MainActivity : Activity() {
 
     private fun scheduleCard(s: ScheduleItem): View {
         val c = card(12)
+        val ids = s.allItemIds
         val r = row()
         r.addView(label(s.timeText(), 22f, if (s.enabled) T.ACCENT else T.DIM, true))
         r.addView(hpad(12))
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(label(s.title, 14f, T.TEXT, true))
-        col.addView(label(s.daysText() + (if (s.wake) " · 先唤醒电视" else ""), 11f, T.DIM))
+        col.addView(label(
+            s.daysText() + (if (s.wake) " · 先唤醒电视" else "") +
+                (if (ids.size > 1) " · " + ids.size + " 个内容" else ""),
+            11f, T.DIM
+        ))
         r.addView(col)
         r.addView(android.widget.Space(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
         val sw = Switch(this).apply {
@@ -544,9 +649,36 @@ class MainActivity : Activity() {
         r.addView(sw)
         c.addView(r)
         c.addView(vpad(6))
+        if (ids.size > 1) {
+            // 卡片上直接展示当前播放顺序，避免“排了但看不见”。
+            ids.take(5).forEachIndexed { index, id ->
+                val t = store.item(id)?.title ?: "（已删除）"
+                c.addView(label((index + 1).toString() + ". " + t, 11f, T.DIM))
+            }
+            if (ids.size > 5) c.addView(label("… 共 " + ids.size + " 个内容", 11f, T.DIM))
+            c.addView(vpad(6))
+        }
         val actions = row()
+        if (ids.size > 1) {
+            actions.addView(button("调整顺序", false) {
+                val libItems = ids.mapNotNull { store.item(it) }
+                if (libItems.size < 2) {
+                    toast("内容不足 2 个，无法调整")
+                } else {
+                    orderItemsDialog("调整顺序 · " + s.title, libItems) { ordered ->
+                        store.setScheduleItems(s.id, ordered.map { it.id })
+                        store.log("schedule", "调整顺序：" + s.title + " → " +
+                            ordered.joinToString(" > ") { it.title })
+                        toast("顺序已保存")
+                        render()
+                    }
+                }
+            })
+            actions.addView(hpad(8))
+        }
         actions.addView(button("立即执行", false) {
-            PlaybackService.playItem(this, s.itemId, "schedule")
+            if (ids.size > 1) PlaybackService.playPlaylist(this, ids, "schedule")
+            else ids.firstOrNull()?.let { PlaybackService.playItem(this, it, "schedule") }
             toast("已触发：" + s.title)
         })
         actions.addView(hpad(8))
@@ -558,22 +690,156 @@ class MainActivity : Activity() {
         return c
     }
 
+    private fun startPlaylistDialog() {
+        pickItemsDialog("顺序播放", "下一步") { chosen ->
+            orderItemsDialog("调整播放顺序", chosen) { ordered ->
+                PlaybackService.playPlaylist(this, ordered.map { it.id }, "manual")
+                toast("已开始顺序播放：" + ordered.size + " 个内容")
+            }
+        }
+    }
+
     private fun addScheduleDialog() {
+        pickItemsDialog("新建节目单", "下一步") { chosen ->
+            orderItemsDialog("调整播放顺序", chosen) { ordered ->
+                showScheduleTimeDialog(ordered)
+            }
+        }
+    }
+
+    /**
+     * 已选内容的播放顺序编辑：↑/↓ 移动，确定后按当前顺序播放。
+     * 合集内部仍按 B站剧集顺序展开，这里只调整「内容与内容之间」的先后。
+     */
+    private fun orderItemsDialog(title: String, initial: List<LibItem>, onConfirm: (List<LibItem>) -> Unit) {
+        if (initial.size <= 1) {
+            onConfirm(initial)
+            return
+        }
+        val order = initial.toMutableList()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(4))
+        }
+        box.addView(label("按下面的顺序播放；点 ↑ ↓ 调整先后。", 11f, T.DIM))
+        box.addView(vpad(6))
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply {
+            addView(list)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(320)
+            )
+        }
+        box.addView(scroll)
+
+        fun rebuild() {
+            list.removeAllViews()
+            order.forEachIndexed { index, item ->
+                val r = row()
+                r.addView(label((index + 1).toString() + ".", 12f, T.DIM))
+                r.addView(hpad(6))
+                val name = label(
+                    item.title + (if (item.kind == ItemKind.SERIES) "（" + item.bvids.size + " 集）" else ""),
+                    13f, T.TEXT
+                )
+                name.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                name.maxLines = 2
+                name.ellipsize = TextUtils.TruncateAt.END
+                r.addView(name)
+                val up = chip("↑", false) {
+                    if (order.moveItem(index, index - 1)) rebuild()
+                }
+                val down = chip("↓", false) {
+                    if (order.moveItem(index, index + 1)) rebuild()
+                }
+                if (index == 0) up.alpha = 0.35f
+                if (index == order.size - 1) down.alpha = 0.35f
+                r.addView(up)
+                r.addView(hpad(4))
+                r.addView(down)
+                list.addView(r)
+                list.addView(vpad(4))
+            }
+        }
+        rebuild()
+
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确定") { _, _ -> onConfirm(order.toList()) }
+            .show()
+    }
+
+    /**
+     * 多选内容库条目；勾选顺序就是播放顺序，合集会在播放服务里自动展开成每一集。
+     */
+    private fun pickItemsDialog(title: String, positive: String, onPick: (List<LibItem>) -> Unit) {
         val items = store.items()
         if (items.isEmpty()) {
-            toast("先去内容库导入一条内容")
+            toast("先去内容库导入内容")
             return
         }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(8), dp(18), dp(4))
         }
-        box.addView(label("选内容", 12f, T.DIM))
-        val spinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                items.map { it.kindLabel + " · " + it.title })
+        box.addView(label("先勾选内容，下一步可调整播放顺序；合集会自动展开为每一集。", 11f, T.DIM))
+        box.addView(vpad(6))
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val picked = LinkedHashSet<String>()
+        val checks = mutableListOf<CheckBox>()
+        items.forEach { item ->
+            val cb = CheckBox(this).apply {
+                text = item.kindLabel + " · " + item.title +
+                    (if (item.kind == ItemKind.SERIES) "（" + item.bvids.size + " 集）" else "")
+                setTextColor(T.TEXT)
+                textSize = 14f
+                setOnCheckedChangeListener { _, checked ->
+                    if (checked) picked += item.id else picked -= item.id
+                }
+            }
+            checks += cb
+            list.addView(cb)
         }
-        box.addView(spinner)
+        val bulk = row()
+        bulk.addView(button("全选", false) { checks.forEach { it.isChecked = true } })
+        bulk.addView(hpad(6))
+        bulk.addView(button("清空", false) { checks.forEach { it.isChecked = false } })
+        box.addView(bulk)
+        box.addView(vpad(4))
+        val scroll = ScrollView(this).apply {
+            addView(list)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(320)
+            )
+        }
+        box.addView(scroll)
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .setPositiveButton(positive) { _, _ ->
+                val chosen = picked.mapNotNull { id -> items.firstOrNull { it.id == id } }
+                if (chosen.isEmpty()) toast("至少选一条")
+                else onPick(chosen)
+            }
+            .show()
+    }
+
+    private fun showScheduleTimeDialog(chosen: List<LibItem>) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(4))
+        }
+        val episodes = chosen.sumOf { it.episodeCount }
+        box.addView(label(
+            if (chosen.size == 1) "内容：" + chosen.first().title
+            else "内容：" + chosen.size + " 个，共 " + episodes + " 集",
+            12f, T.DIM
+        ))
 
         box.addView(vpad(10))
         box.addView(label("时间", 12f, T.DIM))
@@ -614,20 +880,22 @@ class MainActivity : Activity() {
         wakeRow.addView(wakeSw)
         box.addView(wakeRow)
 
+        val title = if (chosen.size == 1) chosen.first().title
+        else chosen.size.toString() + " 个内容 · 共 " + episodes + " 集"
         AlertDialog.Builder(this)
             .setTitle("新建节目单")
             .setView(box)
             .setNegativeButton("取消", null)
             .setPositiveButton("保存") { _, _ ->
-                val idx = spinner.selectedItemPosition.coerceIn(0, items.size - 1)
-                val item = items[idx]
                 store.addSchedule(
                     ScheduleItem(
-                        id = "", itemId = item.id, title = item.title,
-                        hour = hour, minute = minute, days = picked.toSet(), wake = wakeSw.isChecked
+                        id = "", itemId = chosen.first().id, title = title,
+                        hour = hour, minute = minute, days = picked.toSet(), wake = wakeSw.isChecked,
+                        itemIds = chosen.map { it.id }
                     )
                 )
-                store.log("schedule", "新增：" + item.title + " " + "%02d:%02d".format(hour, minute))
+                store.log("schedule", "新增：" + title + " " + "%02d:%02d".format(hour, minute) +
+                    "（" + chosen.size + " 个内容 / " + episodes + " 集）")
                 render()
             }
             .show()
@@ -664,6 +932,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+        monitorField = input
         addRow.addView(input)
         addRow.addView(hpad(8))
         addRow.addView(button("添加", true) {
@@ -779,6 +1048,8 @@ class MainActivity : Activity() {
         card2.addView(vpad(8))
         card2.addView(field("空闲自动停止（分钟，0=不自动）", cfg.idleTimeoutMinutes.toString(), "0", numeric = true))
         card2.addView(vpad(8))
+        card2.addView(field("直播画质 qn（80/150/250/400/10000）", cfg.liveQn.toString(), "250", numeric = true))
+        card2.addView(vpad(8))
         card2.addView(field("播放器包名", cfg.mpvPkg, "is.xyz.mpv"))
         card2.addView(vpad(8))
         card2.addView(field("播放器 Activity", cfg.mpvActivity, "is.xyz.mpv/.MPVActivity"))
@@ -884,6 +1155,7 @@ class MainActivity : Activity() {
             pickCount = intOf("每批取几条", old.pickCount),
             statusSeconds = intOf("状态刷新（秒）", old.statusSeconds),
             idleTimeoutMinutes = intOf("空闲自动停止（分钟，0=不自动）", old.idleTimeoutMinutes),
+            liveQn = intOf("直播画质 qn（80/150/250/400/10000）", old.liveQn),
             mpvPkg = valOf("播放器包名", old.mpvPkg),
             mpvActivity = valOf("播放器 Activity", old.mpvActivity)
         )
@@ -917,6 +1189,7 @@ class MainActivity : Activity() {
         render()
         val cfg = store.config()
         Ctl.bg {
+            // 优先复用播放服务里已握手的 ADB 连接；不在一台电视或服务未启动时才独立连接。
             val results = SelfTest.run(cfg, store, Ctl.service?.activeAdbShell(cfg))
             runOnUiThread {
                 selfTesting = false

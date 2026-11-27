@@ -45,10 +45,10 @@ class AdbTvController(
         val alive = transport.isAlive(mpvPackage)
         if (!alive) return TvStatus(alive = false, playing = false)
         val source = mediaSession ?: return TvStatus(alive = true, playing = false)
-        val playing = runCatching {
-            MediaSessionProbe.isPlaying(source.dumpMediaSessions(), mpvPackage)
-        }.getOrDefault(false)
-        return TvStatus(alive = true, playing = playing)
+        val parsed = runCatching {
+            MediaSessionProbe.parse(source.dumpMediaSessions(), mpvPackage)
+        }.getOrNull()
+        return TvStatus(alive = true, playing = parsed?.playing == true, state = parsed?.state)
     }
 
     private fun ShellResult.toAck(): Ack = if (ok) {

@@ -59,8 +59,28 @@ interface BiliLiveApi {
 
 class RealBiliLiveApi(
     private val http: HttpText,
-    private val timeoutMs: Int = 15_000
+    private val timeoutMs: Int = 15_000,
+    /** 直播画质 qn。默认 10000（原画）；App 按配置传入，默认 250。 */
+    private val liveQn: Int = 10_000
 ) : BiliLiveApi {
+
+    /**
+     * 匿名 buvid（二代 station.py 同做法）：不带这个 cookie，直播接口在高人气房间
+     * 更容易被风控成 -352 / 空 playurl。取不到就返回空串，绝不影响主流程。
+     */
+    private val cookie: String by lazy {
+        try {
+            val body = http.get("https://api.bilibili.com/x/frontend/finger/spi", HEADERS, timeoutMs)
+            BuvidParser.parse(body)?.let {
+                "buvid3=" + it.buvid3 + "; buvid4=" + it.buvid4
+            } ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun apiHeaders(): Map<String, String> =
+        if (cookie.isBlank()) HEADERS else HEADERS + ("Cookie" to cookie)
 
     override fun roomInfo(roomId: Long): RoomInfo {
         val url = "https://api.live.bilibili.com/room/v1/Room/get_info?room_id=" + roomId
@@ -82,10 +102,16 @@ class RealBiliLiveApi(
     override fun flvStream(roomId: Long): FlvStream {
         val url = ("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo" +
             "?room_id=" + roomId +
-            "&protocol=0,1&format=0,1,2&codec=0,1&qn=10000&platform=web&ptype=8")
-        val root = parseBody(url, http.get(url, HEADERS, timeoutMs))
-        val streams = root.field("data")?.field("playurl_info")?.field("playurl")
-            ?.field("stream")?.arrOrNull()
+            "&protocol=0,1&format=0,1,2&codec=0,1&qn=" + liveQn + "&platform=web&ptype=8")
+        val root = parseBody(url, http.get(url, apiHeaders(), timeoutMs))
+        val code = root.field("code")?.longOrNull()
+        if (code != null && code != 0L) {
+            val msg = root.field("message")?.strOrNull().orEmpty()
+            throw BiliApiException("playurl code=" + code + (if (msg.isBlank()) "" else " " + msg))
+        }
+        val info = root.field("data")?.field("playurl_info")
+            ?: throw BiliApiException("playurl_info missing for room " + roomId + "（未开播/轮播或风控）")
+        val streams = info.field("playurl")?.field("stream")?.arrOrNull()
             ?: throw BiliApiException("no stream for room " + roomId)
         for (s in streams) {
             val proto = s.field("protocol_name")?.strOrNull() ?: continue

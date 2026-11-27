@@ -71,7 +71,7 @@ core/src/main/kotlin/tvrc/core/
 
 ---
 
-## 4. 契约冻结（P4-3，core API v1）
+## 4. 契约冻结（P4-3，core API v2）
 
 2026-11-23：APP 版本标记统一为 `3.0.0-alpha.6`（versionCode 8）。新增媒体传输观察回调、安全有限请求重试及恢复边界；三项冻结接口与配置 schema 均未变更，CORE_API / CONFIG_SCHEMA 保持 1。此文前部为历史基线，当前进展以 README 与 docs/dev/2026-11-23-stability.md 为准。
 
@@ -82,6 +82,8 @@ core/src/main/kotlin/tvrc/core/
 | `Scheduler`/`Clock` | `core/.../engine/Scheduler.kt:19` | 回调在别的线程；action 异常必须吞掉；`cancelAll()` 必须真取消；`delayMs<0` 视为 0；Android 侧用 Handler 实现即可，语义不变 |
 
 升级规则：改任一接口签名 = 升 `TvrcVersion.CORE_API`，并在本文 §4 记一行变更；改配置字段 = 升 `CONFIG_SCHEMA` 且**必须**在 `LegacyConfigMigrator` 加迁移分支。三接口当前**无 TODO 遗留**。
+
+- 2026-11-23：`TvStatus` 增加可选 `state: Int?`（`dumpsys media_session` 的 PlaybackState.state），用于顺序播放区分「暂停/缓冲」和「播完/进程退出」；旧实现只填 `alive`/`playing` 仍然可用。`CORE_API` 1→2。
 
 ---
 
@@ -180,6 +182,7 @@ JSON schema（`--json`）：
 
 | 日期 | 变更 |
 |---|---|
+| 2026-11-23 | APP 升至 alpha.5（versionCode 7）：批量导入（多链接/分享文案/txt 文档，自动去重）、节目单多选按顺序播放（合集展开为每集）、顺序播放按播放器结束信号自动切集；自检复用运行中的 ADB 连接，避免另开握手误报超时；修复导入框刷新后丢失粘贴内容；`TvStatus` 增加可选 `state`，CORE_API 1→2。 |
 | 2026-11-21 | APP 升至 alpha.4（versionCode 6）：新增持久化结构化诊断事件、App 内诊断对话框、导入失败/播放状态/电视回执/网络异常追踪，并扩充导出诊断包。配置 schema 与 core API 保持 1；详见 docs/dev/2026-11-21-diagnostics.md。 |
 | 2026-11-21 | APP 升至 alpha.3（versionCode 5）：依据 AOSP 修正 ADB 校验和、公钥编码与签名，分离自检连通/安装状态，增加 Android 15/16 屏幕安全区域适配。配置 schema 与 core API 保持 1；详见 docs/dev/2026-11-21-adb-and-phone-layout.md。 |
 | 2026-11-21 | APP 升至 3.0.0-alpha.2（versionCode 4），修复设备 IP 保存与表单草稿丢失；新增设备设置校验，旧播放校验保留，配置 schema/core API 仍为 1。详见 docs/dev/2026-11-21-device-config-fix.md。 |

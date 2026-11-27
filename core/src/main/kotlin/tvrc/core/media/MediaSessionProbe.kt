@@ -22,7 +22,9 @@ class AdbMediaSessionSource(
 data class MediaSessionState(
     val packageName: String,
     val active: Boolean,
-    val playing: Boolean
+    val playing: Boolean,
+    /** PlaybackState.state 原值（3=播放，2=暂停，1=停止，6=缓冲…）；没解析到时为 null。 */
+    val state: Int? = null
 )
 
 /**
@@ -66,6 +68,7 @@ object MediaSessionProbe {
                     val value = m.groupValues[1].toIntOrNull() ?: return@let
                     if (!s.sawState) {
                         s.sawState = true
+                        s.state = value
                         s.playing = value == STATE_PLAYING
                     }
                 }
@@ -84,8 +87,9 @@ object MediaSessionProbe {
     private class MutableSession(val packageName: String) {
         var active: Boolean = false
         var playing: Boolean = false
+        var state: Int? = null
         var sawState: Boolean = false
 
-        fun build() = MediaSessionState(packageName, active, playing)
+        fun build() = MediaSessionState(packageName, active, playing, state)
     }
 }

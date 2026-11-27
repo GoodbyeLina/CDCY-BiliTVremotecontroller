@@ -98,4 +98,38 @@ class SelfTestAdbTest {
         assertTrue(result[0].ok)
         assertTrue(result[1].detail.startsWith("尚未确认"))
     }
+
+    @Test fun activeShellIsReusedWithoutOpeningAnotherConnection() {
+        val commands = mutableListOf<String>()
+        var factoryCalls = 0
+        val result = SelfTest.checkAdb(
+            config,
+            activeShell = { command, _ ->
+                commands += command
+                if (command == "echo TVRC_ADB_OK") ShellResult(0, "TVRC_ADB_OK\n")
+                else ShellResult(0, "package:is.xyz.mpv\npackage:com.android.tv.settings\n")
+            }
+        ) {
+            factoryCalls++
+            error("应当复用运行中的 ADB 连接，不应另开 client")
+        }
+        assertTrue(result[0].ok)
+        assertTrue(result[1].ok)
+        assertEquals(listOf("echo TVRC_ADB_OK", "pm list packages"), commands)
+        assertEquals(0, factoryCalls)
+    }
+
+    @Test fun activeShellFailureDoesNotSilentlyFallBack() {
+        var factoryCalls = 0
+        val result = SelfTest.checkAdb(
+            config,
+            activeShell = { _, _ -> ShellResult(-1, "", "not connected") }
+        ) {
+            factoryCalls++
+            Client(ShellResult(0))
+        }
+        assertFalse(result[0].ok)
+        assertTrue(result[0].detail.contains("not connected"))
+        assertEquals(0, factoryCalls)
+    }
 }

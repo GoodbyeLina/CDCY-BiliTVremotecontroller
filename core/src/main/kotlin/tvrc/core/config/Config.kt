@@ -34,6 +34,9 @@ data class AppConfig(
     val mpvActivity: String = "is.xyz.mpv/.MPVActivity",
     val wizardCompleted: Boolean = false,
     val idleTimeoutMinutes: Int = 0,
+    /** 直播画质 qn：80 流畅 / 150 高清 / 250 超清 / 400 蓝光 / 10000 原画。
+     *  默认 250：手机中转要「收一遍再发一遍」，原画在热门房间容易把 Wi-Fi 打满。 */
+    val liveQn: Int = DEFAULT_LIVE_QN,
     /** 未知键原样保留（二代 config.json 里可能有 control_port / setup_seen 等）。 */
     val extra: Map<String, JsonValue> = emptyMap()
 ) {
@@ -51,6 +54,9 @@ data class AppConfig(
         const val MIN_STATUS_SECONDS = 3
         const val MAX_STATUS_SECONDS = 600
         const val MAX_IDLE_MINUTES = 24 * 60
+        const val DEFAULT_LIVE_QN = 250
+        /** B站直播可选清晰度；不在这个集合里的值会让配置校验失败。 */
+        val LIVE_QN_CHOICES = setOf(80, 150, 250, 400, 10_000)
     }
 }
 
@@ -93,6 +99,9 @@ object ConfigValidator {
         if (c.tvHost.isBlank()) e += "tv 地址为空（首次配置由向导写入）"
         if (c.idleTimeoutMinutes !in 0..AppConfig.MAX_IDLE_MINUTES) {
             e += "idle_timeout_minutes=@${c.idleTimeoutMinutes} 超范围（0–@${AppConfig.MAX_IDLE_MINUTES}，0=不自动停）"
+        }
+        if (c.liveQn !in AppConfig.LIVE_QN_CHOICES) {
+            e += "live_qn=@${c.liveQn} 不合法（可选 80/150/250/400/10000）"
         }
         return ConfigCheck(c, e)
     }
@@ -149,7 +158,7 @@ class JsonConfigRepository(
         val known = setOf(
             "schemaVersion", "schema_version", "source", "rooms", "list_mid", "list_id",
             "pick_count", "switch_seconds", "status_seconds", "port", "tv", "public_host",
-            "mpv_pkg", "mpv_activity", "wizard_completed", "idle_timeout_minutes"
+            "mpv_pkg", "mpv_activity", "wizard_completed", "idle_timeout_minutes", "live_qn"
         )
         val extra = obj.fields.filterKeys { it !in known }
         val tv = obj.field("tv").strOrNull() ?: ""
@@ -178,6 +187,7 @@ class JsonConfigRepository(
                 else -> false
             },
             idleTimeoutMinutes = (obj.field("idle_timeout_minutes").longOrNull() ?: 0L).toInt(),
+            liveQn = (obj.field("live_qn").longOrNull() ?: AppConfig.DEFAULT_LIVE_QN.toLong()).toInt(),
             extra = extra
         )
         return LoadResult.Ok(cfg, validate(cfg))
@@ -236,6 +246,7 @@ class JsonConfigRepository(
             kv("mpv_activity", "\"" + c.mpvActivity + "\"")
             kv("wizard_completed", c.wizardCompleted.toString())
             kv("idle_timeout_minutes", c.idleTimeoutMinutes.toString())
+            kv("live_qn", c.liveQn.toString())
             for (entry in c.extra) kv(entry.key, entry.value.write())
             if (sb.endsWith(",\n")) sb.setLength(sb.length - 2)
             sb.append("\n}\n")

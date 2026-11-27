@@ -3,8 +3,12 @@ package tvrc.core
 /** 一次 adb/播放器命令的回执。 */
 data class Ack(val ok: Boolean, val detail: String = "")
 
-/** 电视侧探针结果。alive=进程还在，playing=确实在播。 */
-data class TvStatus(val alive: Boolean, val playing: Boolean)
+/**
+ * 电视侧探针结果。alive=进程还在，playing=确实在播。
+ * [state] 是 dumpsys media_session 的 PlaybackState.state（3=播放、2=暂停、1=停止、6=缓冲…），
+ * null 表示没有取到会话或格式不认识；顺序播放用它区分「播完/进程退出」和「用户暂停」。
+ */
+data class TvStatus(val alive: Boolean, val playing: Boolean, val state: Int? = null)
 
 /**
  * 电视控制端口 —— 契约已冻结（P4-3，2026-11-13，core API v1）。
